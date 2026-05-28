@@ -20,6 +20,7 @@ import {
   tryNeuralBotAction,
 } from "../core/ai/NeuralBotTactics";
 import { Config } from "../core/configuration/Config";
+import { NationExecution } from "../core/execution/NationExecution";
 import { SpawnExecution } from "../core/execution/SpawnExecution";
 import { getSpawnTiles } from "../core/execution/Util";
 import {
@@ -30,6 +31,7 @@ import {
   GameMode,
   GameType,
   Gold,
+  Nation,
   Player,
   PlayerInfo,
   PlayerType,
@@ -43,11 +45,26 @@ import { GameConfig } from "../core/Schemas";
 
 export const TRAINING_ACTIONS = NEURAL_BOT_ACTIONS;
 export type TrainingAction = NeuralBotAction;
+export const TRAINING_OPPONENT_AI = [
+  "heuristic",
+  "tribe",
+  "nation",
+  "mixed",
+] as const;
+export type TrainingOpponentAI = (typeof TRAINING_OPPONENT_AI)[number];
+
+type ResolvedOpponentAI = Exclude<TrainingOpponentAI, "mixed">;
+const MIXED_OPPONENT_AI_ROTATION = [
+  "tribe",
+  "nation",
+  "heuristic",
+] as const satisfies readonly ResolvedOpponentAI[];
 
 export interface TrainingEnvOptions {
   decisionInterval: number;
   maxTicks: number;
   mapName: string;
+  opponentAI: TrainingOpponentAI;
   opponents: number;
   seed: number;
 }
@@ -174,6 +191,7 @@ export class OpenFrontTrainingEnv {
   private mapBin: Uint8Array;
   private miniMapBin: Uint8Array;
   private manifest: MapManifest;
+  private heuristicOpponents: Player[] = [];
   private totalReward = 0;
 
   constructor(private readonly options: TrainingEnvOptions) {
@@ -217,18 +235,63 @@ export class OpenFrontTrainingEnv {
       new UserSettings(),
       false,
     );
-    const players = [
-      new PlayerInfo("Learner", PlayerType.Human, null, "learner"),
-      ...Array.from(
-        { length: this.options.opponents },
-        (_, index) =>
-          new PlayerInfo(
-            `Heuristic ${index + 1}`,
-            PlayerType.Human,
-            null,
-            `heuristic-${index + 1}`,
-          ),
-      ),
+    const gameID = `train-${episode}`;
+    const opponentModes = this.opponentModes();
+    const learnerInfo = new PlayerInfo(
+      "Learner",
+      PlayerType.Human,
+      null,
+      "learner",
+    );
+    const heuristicInfos: PlayerInfo[] = [];
+    const tribeInfos: PlayerInfo[] = [];
+    const nationInfos: PlayerInfo[] = [];
+
+    opponentModes.forEach((opponentAI, index) => {
+      const opponentNumber = index + 1;
+      switch (opponentAI) {
+        case "heuristic":
+          heuristicInfos.push(
+            new PlayerInfo(
+              `Heuristic ${opponentNumber}`,
+              PlayerType.Human,
+              null,
+              `heuristic-${opponentNumber}`,
+            ),
+          );
+          return;
+        case "tribe":
+          tribeInfos.push(
+            new PlayerInfo(
+              `Tribe ${opponentNumber}`,
+              PlayerType.Bot,
+              null,
+              `tribe-${opponentNumber}`,
+            ),
+          );
+          return;
+        case "nation":
+          nationInfos.push(
+            new PlayerInfo(
+              `Nation ${opponentNumber}`,
+              PlayerType.Nation,
+              null,
+              `nation-${opponentNumber}`,
+            ),
+          );
+          return;
+      }
+    });
+
+    const players = [learnerInfo, ...heuristicInfos, ...tribeInfos];
+    const nations = nationInfos.map(
+      (playerInfo) => new Nation(undefined, playerInfo),
+    );
+    const spawnInfos = [
+      learnerInfo,
+      ...heuristicInfos,
+      ...tribeInfos,
+      ...nationInfos,
     ];
 
     const originalLog = console.log;
@@ -242,23 +305,28 @@ export class OpenFrontTrainingEnv {
       originalLog(...args);
     };
     try {
-      this.game = createGame(players, [], gameMap, miniGameMap, config);
+      this.game = createGame(players, nations, gameMap, miniGameMap, config);
     } finally {
       console.log = originalLog;
     }
 
-    const centers = this.findSpawnCenters(players.length);
+    const centers = this.findSpawnCenters(spawnInfos.length);
     this.game.addExecution(
-      ...players.map(
-        (player, index) =>
-          new SpawnExecution(`train-${episode}`, player, centers[index]),
+      ...spawnInfos.map(
+        (player, index) => new SpawnExecution(gameID, player, centers[index]),
       ),
     );
     this.game.executeNextTick();
     this.game.endSpawnPhase();
+    this.game.addExecution(
+      ...nations.map((nation) => new NationExecution(gameID, nation)),
+    );
     this.game.executeNextTick();
 
     this.learner = this.game.player("learner");
+    this.heuristicOpponents = heuristicInfos.map((playerInfo) =>
+      this.game.player(playerInfo.id),
+    );
     return this.state();
   }
 
@@ -272,7 +340,7 @@ export class OpenFrontTrainingEnv {
       this.learner,
       TRAINING_ACTIONS[actionIndex],
     );
-    for (const opponent of this.opponents()) {
+    for (const opponent of this.heuristicOpponents) {
       this.applyAction(opponent, this.heuristicAction(opponent));
     }
 
@@ -340,6 +408,21 @@ export class OpenFrontTrainingEnv {
       return "hold";
     }
     return this.rng.next() < 0.65 ? "attack_weakest" : "attack_strongest";
+  }
+
+  private opponentModes(): ResolvedOpponentAI[] {
+    return Array.from({ length: this.options.opponents }, (_, index) => {
+      switch (this.options.opponentAI) {
+        case "heuristic":
+        case "tribe":
+        case "nation":
+          return this.options.opponentAI;
+        case "mixed":
+          return MIXED_OPPONENT_AI_ROTATION[
+            index % MIXED_OPPONENT_AI_ROTATION.length
+          ];
+      }
+    });
   }
 
   private findSpawnCenters(count: number): TileRef[] {

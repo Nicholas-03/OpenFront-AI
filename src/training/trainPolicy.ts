@@ -15,7 +15,12 @@ import {
   PolicyGradientSample,
   SerializedNeuralPolicy,
 } from "./NeuralPolicy";
-import { OpenFrontTrainingEnv, TRAINING_ACTIONS } from "./OpenFrontTrainingEnv";
+import {
+  OpenFrontTrainingEnv,
+  TRAINING_ACTIONS,
+  TRAINING_OPPONENT_AI,
+  TrainingOpponentAI,
+} from "./OpenFrontTrainingEnv";
 import { ParallelRolloutPool } from "./ParallelRolloutPool";
 import { EpisodeRollout, runPolicyEpisode, Transition } from "./Rollout";
 import { SeededRandom } from "./TrainingRandom";
@@ -58,6 +63,16 @@ function stringArg(name: string, fallback: string): string {
 
 function hasFlag(name: string): boolean {
   return process.argv.includes(name);
+}
+
+function opponentAIArg(): TrainingOpponentAI {
+  const value = stringArg("--opponentAI", "heuristic");
+  if (TRAINING_OPPONENT_AI.includes(value as TrainingOpponentAI)) {
+    return value as TrainingOpponentAI;
+  }
+  throw new Error(
+    `Invalid --opponentAI "${value}". Expected one of: ${TRAINING_OPPONENT_AI.join(", ")}`,
+  );
 }
 
 function discountedSamples(
@@ -233,6 +248,7 @@ async function main(): Promise<void> {
   const opponents = numberArg("--opponents", 3);
   const seed = numberArg("--seed", 42);
   const mapName = stringArg("--map", "plains");
+  const opponentAI = opponentAIArg();
   const outputDir = stringArg("--outDir", "training-output");
   const publicDir = hasFlag("--noPublicCopy")
     ? null
@@ -252,6 +268,7 @@ async function main(): Promise<void> {
     decisionInterval,
     maxTicks,
     mapName,
+    opponentAI,
     opponents,
     seed,
   };
@@ -322,7 +339,7 @@ async function main(): Promise<void> {
   });
 
   console.log(
-    `training openfront policy: episodes=${trainForever ? "until Ctrl+C" : episodes} map=${mapName} opponents=${opponents} maxTicks=${maxTicks} logEvery=${logEvery} checkpointEvery=${checkpointEvery} workers=${workerCount} learningRate=${learningRate} restart=${restart ? restartFrom : "off"} publicCopy=${publicDir ?? "off"}`,
+    `training openfront policy: episodes=${trainForever ? "until Ctrl+C" : episodes} map=${mapName} opponents=${opponents} opponentAI=${opponentAI} maxTicks=${maxTicks} logEvery=${logEvery} checkpointEvery=${checkpointEvery} workers=${workerCount} learningRate=${learningRate} restart=${restart ? restartFrom : "off"} publicCopy=${publicDir ?? "off"}`,
   );
   console.log(
     `network: ${[env.inputSize, ...NEURAL_BOT_HIDDEN_LAYERS, TRAINING_ACTIONS.length].join(" -> ")} (${policy.parameterCount()} parameters)`,
