@@ -338,8 +338,10 @@ async function main(): Promise<void> {
     console.log("Stopping after the current episode cleanup.");
   });
 
+  const episodeEnd =
+    opponentAI === "heuristic" ? "maxTicks_or_match_finish" : "match_finish";
   console.log(
-    `training openfront policy: episodes=${trainForever ? "until Ctrl+C" : episodes} map=${mapName} opponents=${opponents} opponentAI=${opponentAI} maxTicks=${maxTicks} logEvery=${logEvery} checkpointEvery=${checkpointEvery} workers=${workerCount} learningRate=${learningRate} restart=${restart ? restartFrom : "off"} publicCopy=${publicDir ?? "off"}`,
+    `training openfront policy: episodes=${trainForever ? "until Ctrl+C" : episodes} map=${mapName} opponents=${opponents} opponentAI=${opponentAI} maxTicks=${maxTicks} episodeEnd=${episodeEnd} logEvery=${logEvery} checkpointEvery=${checkpointEvery} workers=${workerCount} learningRate=${learningRate} restart=${restart ? restartFrom : "off"} publicCopy=${publicDir ?? "off"}`,
   );
   console.log(
     `network: ${[env.inputSize, ...NEURAL_BOT_HIDDEN_LAYERS, TRAINING_ACTIONS.length].join(" -> ")} (${policy.parameterCount()} parameters)`,

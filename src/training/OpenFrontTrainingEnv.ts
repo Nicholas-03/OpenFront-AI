@@ -494,10 +494,18 @@ export class OpenFrontTrainingEnv {
   }
 
   private done(): boolean {
-    return (
-      this.game.ticks() >= this.options.maxTicks ||
+    const matchFinished =
+      this.game.getWinner() !== null ||
       !this.learner.isAlive() ||
-      this.game.players().length <= 1
-    );
+      this.game.players().length <= 1;
+    if (matchFinished) {
+      return true;
+    }
+
+    if (this.options.opponentAI !== "heuristic") {
+      return false;
+    }
+
+    return this.game.ticks() >= this.options.maxTicks;
   }
 }
