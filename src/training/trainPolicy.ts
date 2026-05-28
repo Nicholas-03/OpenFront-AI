@@ -1,6 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import {
+  NEURAL_BOT_GLOBAL_MAP_SIZE,
+  NEURAL_BOT_LOCAL_MAP_SIZE,
+  NEURAL_BOT_MAP_CHANNEL_COUNT,
+  NEURAL_BOT_SCALAR_INPUT_SIZE,
+  NEURAL_BOT_SPATIAL_POOL_SIZE,
+} from "../core/ai/NeuralBotFeatures";
 import { NEURAL_BOT_HIDDEN_LAYERS } from "../core/ai/NeuralBotPolicy";
 import {
   NeuralPolicy,
@@ -318,6 +325,9 @@ async function main(): Promise<void> {
   );
   console.log(
     `network: ${[env.inputSize, ...NEURAL_BOT_HIDDEN_LAYERS, TRAINING_ACTIONS.length].join(" -> ")} (${policy.parameterCount()} parameters)`,
+  );
+  console.log(
+    `spatial input: global=${NEURAL_BOT_GLOBAL_MAP_SIZE}x${NEURAL_BOT_GLOBAL_MAP_SIZE} local=${NEURAL_BOT_LOCAL_MAP_SIZE}x${NEURAL_BOT_LOCAL_MAP_SIZE} channels=${NEURAL_BOT_MAP_CHANNEL_COUNT} pooled=${NEURAL_BOT_SPATIAL_POOL_SIZE}x${NEURAL_BOT_SPATIAL_POOL_SIZE} scalars=${NEURAL_BOT_SCALAR_INPUT_SIZE}`,
   );
   console.log(`actions: ${TRAINING_ACTIONS.join(", ")}`);
 

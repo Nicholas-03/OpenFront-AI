@@ -4,7 +4,7 @@ import { Execution, Game, Player, PlayerID } from "../game/Game";
 import { TileRef } from "../game/GameMap";
 import { PseudoRandom } from "../PseudoRandom";
 import { simpleHash } from "../Util";
-import { buildNeuralBotFeatures } from "./NeuralBotFeatures";
+import { buildNeuralBotInput } from "./NeuralBotFeatures";
 import {
   forwardNeuralPolicy,
   LoadedNeuralPolicy,
@@ -197,7 +197,7 @@ export class NeuralLiveBotExecution implements Execution {
   }
 
   private state(player: Player): number[] {
-    return buildNeuralBotFeatures({
+    return buildNeuralBotInput({
       game: this.mg,
       player,
       opponentBaseline: Math.max(1, this.mg.allPlayers().length - 1),

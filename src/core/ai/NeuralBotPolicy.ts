@@ -1,3 +1,5 @@
+import { NEURAL_BOT_INPUT_SIZE } from "./NeuralBotFeatures";
+
 export const NEURAL_BOT_CLIENT_ID = "NEURALAI";
 export const NEURAL_BOT_NAME = "Neural AI";
 export const NEURAL_BOT_POLICY_URL = "/training/openfront-policy.json";
@@ -84,6 +86,16 @@ function hasShape(matrix: number[][], rows: number, columns: number): boolean {
             Math.abs(value) <= MAX_NEURAL_POLICY_PARAMETER,
         ),
     )
+  );
+}
+
+function sameNumbers(
+  left: readonly number[],
+  right: readonly number[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
   );
 }
 
@@ -188,6 +200,8 @@ export function parseNeuralPolicySnapshot(
   const weights = normalizePolicyWeights(snapshot.policy);
   if (
     !weights ||
+    weights.inputSize !== NEURAL_BOT_INPUT_SIZE ||
+    !sameNumbers(weights.hiddenLayers, NEURAL_BOT_HIDDEN_LAYERS) ||
     weights.outputSize !== snapshot.actions.length ||
     !isValidPolicyShape(weights)
   ) {

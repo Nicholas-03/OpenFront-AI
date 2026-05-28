@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  buildNeuralBotFeatures,
+  buildNeuralBotInput,
   NEURAL_BOT_INPUT_SIZE,
 } from "../core/ai/NeuralBotFeatures";
 import {
@@ -309,7 +309,7 @@ export class OpenFrontTrainingEnv {
   }
 
   state(): number[] {
-    return buildNeuralBotFeatures({
+    return buildNeuralBotInput({
       game: this.game,
       player: this.learner,
       opponentBaseline: this.options.opponents,

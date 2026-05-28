@@ -10,7 +10,7 @@ import {
   UnitType,
 } from "../game/Game";
 import { TileRef } from "../game/GameMap";
-import { NeuralBotAction } from "./NeuralBotPolicy";
+import type { NeuralBotAction } from "./NeuralBotPolicy";
 
 export const MAX_NEURAL_PARALLEL_ATTACKS = 6;
 
