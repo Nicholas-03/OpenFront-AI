@@ -1,4 +1,6 @@
 import { placeName, placeSpawnName } from "../client/hud/NameBoxCalculator";
+import { isNeuralBotClientID, loadNeuralBotPolicy } from "./ai/NeuralBotPolicy";
+import { NeuralLiveBotExecution } from "./ai/NeuralLiveBotExecution";
 import { Config } from "./configuration/Config";
 import { Executor } from "./execution/ExecutionManager";
 import { RecomputeRailClusterExecution } from "./execution/RecomputeRailClusterExecution";
@@ -73,11 +75,18 @@ export async function createGameRunner(
     config,
     gameMap.teamGameSpawnAreas,
   );
+  const neuralPolicy = humans.some((player) =>
+    isNeuralBotClientID(player.clientID),
+  )
+    ? await loadNeuralBotPolicy()
+    : null;
 
   const gr = new GameRunner(
+    gameStart.gameID,
     game,
     new Executor(game, gameStart.gameID, clientID),
     callBack,
+    neuralPolicy,
   );
   gr.init();
   return gr;
@@ -91,9 +100,11 @@ export class GameRunner {
   private playerViewData: Record<PlayerID, NameViewData> = {};
 
   constructor(
+    private readonly gameID: string,
     public game: Game,
     private execManager: Executor,
     private callBack: (gu: GameUpdateViewData | ErrorUpdate) => void,
+    private neuralPolicy: Awaited<ReturnType<typeof loadNeuralBotPolicy>>,
   ) {}
 
   init() {
@@ -110,6 +121,17 @@ export class GameRunner {
     }
     if (this.game.config().spawnNations()) {
       this.game.addExecution(...this.execManager.nationExecutions());
+    }
+    for (const player of this.game.allPlayers()) {
+      if (isNeuralBotClientID(player.clientID())) {
+        this.game.addExecution(
+          new NeuralLiveBotExecution(
+            this.gameID,
+            player.id(),
+            this.neuralPolicy,
+          ),
+        );
+      }
     }
     this.game.addExecution(new WinCheckExecution());
     if (!this.game.config().isUnitDisabled(UnitType.Factory)) {

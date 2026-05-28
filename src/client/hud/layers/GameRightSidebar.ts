@@ -1,12 +1,14 @@
 import { html, LitElement } from "lit";
 import { customElement, state } from "lit/decorators.js";
+import { NEURAL_BOT_CLIENT_ID } from "../../../core/ai/NeuralBotPolicy";
 import { assetUrl } from "../../../core/AssetUrls";
 import { EventBus } from "../../../core/EventBus";
 import { GameType } from "../../../core/game/Game";
-import { GameView } from "../../../core/game/GameView";
+import { GameView, PlayerView } from "../../../core/game/GameView";
 import { Controller } from "../../Controller";
 import { crazyGamesSDK } from "../../CrazyGamesSDK";
 import { TogglePauseIntentEvent } from "../../InputHandler";
+import { GoToPlayerEvent } from "../../TransformHandler";
 import { PauseGameIntentEvent, SendWinnerEvent } from "../../Transport";
 import { translateText } from "../../Utils";
 import { ImmunityBarVisibleEvent } from "./ImmunityTimer";
@@ -18,6 +20,7 @@ const FastForwardIconSolid = assetUrl("images/FastForwardIconSolidWhite.svg");
 const pauseIcon = assetUrl("images/PauseIconWhite.svg");
 const playIcon = assetUrl("images/PlayIconWhite.svg");
 const settingsIcon = assetUrl("images/SettingIconWhite.svg");
+const focusIcon = assetUrl("images/FocusIconWhite.svg");
 const fullscreenIcon = assetUrl("images/FullscreenIconWhite.svg");
 const exitFullscreenIcon = assetUrl("images/ExitFullscreenIconWhite.svg");
 
@@ -194,6 +197,22 @@ export class GameRightSidebar extends LitElement implements Controller {
     );
   }
 
+  private neuralAiPlayer(): PlayerView | null {
+    return this.game?.playerByClientID(NEURAL_BOT_CLIENT_ID) ?? null;
+  }
+
+  private canFocusNeuralAi(player: PlayerView | null): boolean {
+    return player !== null && player.hasSpawned() && player.isAlive();
+  }
+
+  private onFocusNeuralAiButtonClick() {
+    const neuralAi = this.neuralAiPlayer();
+    if (neuralAi === null || !this.canFocusNeuralAi(neuralAi)) {
+      return;
+    }
+    this.eventBus.emit(new GoToPlayerEvent(neuralAi, 10));
+  }
+
   private onFullscreenButtonClick() {
     if (!document.fullscreenElement) {
       document.documentElement.requestFullscreen().catch((err) => {
@@ -227,7 +246,7 @@ export class GameRightSidebar extends LitElement implements Controller {
         <div class=${timerColor}>${this.secondsToHms(this.timer)}</div>
 
         <!-- Buttons -->
-        ${this.maybeRenderReplayButtons()}
+        ${this.maybeRenderReplayButtons()} ${this.maybeRenderNeuralAiButton()}
 
         <div class="cursor-pointer" @click=${this.onSettingsButtonClick}>
           <img src=${settingsIcon} alt="settings" width="20" height="20" />
@@ -253,6 +272,38 @@ export class GameRightSidebar extends LitElement implements Controller {
           <img src=${exitIcon} alt="exit" width="20" height="20" />
         </div>
       </aside>
+    `;
+  }
+
+  maybeRenderNeuralAiButton() {
+    const neuralAi = this.neuralAiPlayer();
+    if (neuralAi === null) {
+      return html``;
+    }
+
+    const canFocus = this.canFocusNeuralAi(neuralAi);
+    const label = translateText("game_right_sidebar.focus_neural_ai");
+    return html`
+      <button
+        type="button"
+        class=${`flex h-5 w-5 items-center justify-center border-0 bg-transparent p-0 ${
+          canFocus
+            ? "cursor-pointer opacity-100 hover:opacity-80"
+            : "cursor-default opacity-40"
+        }`}
+        title=${label}
+        aria-label=${label}
+        ?disabled=${!canFocus}
+        @click=${this.onFocusNeuralAiButtonClick}
+      >
+        <img
+          src=${focusIcon}
+          alt=""
+          width="20"
+          height="20"
+          aria-hidden="true"
+        />
+      </button>
     `;
   }
 

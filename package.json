@@ -14,6 +14,7 @@
     "test": "vitest run && vitest run tests/server",
     "perf": "npx tsx tests/perf/run-all.ts",
     "test:coverage": "vitest run --coverage",
+    "train:nn": "tsx src/training/trainPolicy.ts",
     "format": "prettier --ignore-unknown --write .",
     "format:map-generator": "cd map-generator && go fmt .",
     "lint": "eslint",

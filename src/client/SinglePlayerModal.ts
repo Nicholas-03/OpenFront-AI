@@ -1,6 +1,10 @@
 import { TemplateResult, html } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { translateText } from "../client/Utils";
+import {
+  NEURAL_BOT_CLIENT_ID,
+  NEURAL_BOT_NAME,
+} from "../core/ai/NeuralBotPolicy";
 import { UserMeResponse } from "../core/ApiSchemas";
 import { assetUrl } from "../core/AssetUrls";
 import {
@@ -59,6 +63,7 @@ const DEFAULT_OPTIONS = {
   disabledUnits: [] as UnitType[],
   disableAlliances: false,
   waterNukes: false,
+  neuralBot: true,
 } as const;
 
 @customElement("single-player-modal")
@@ -97,6 +102,7 @@ export class SinglePlayerModal extends BaseModal {
   ];
   @state() private disableAlliances: boolean = DEFAULT_OPTIONS.disableAlliances;
   @state() private waterNukes: boolean = DEFAULT_OPTIONS.waterNukes;
+  @state() private neuralBot: boolean = DEFAULT_OPTIONS.neuralBot;
 
   private mapLoader = terrainMapFileLoader;
 
@@ -317,6 +323,10 @@ export class SinglePlayerModal extends BaseModal {
                     labelKey: "single_modal.water_nukes",
                     checked: this.waterNukes,
                   },
+                  {
+                    labelKey: "single_modal.neural_ai",
+                    checked: this.neuralBot,
+                  },
                 ],
                 inputCards,
               },
@@ -378,6 +388,7 @@ export class SinglePlayerModal extends BaseModal {
       this.startingGold !== DEFAULT_OPTIONS.startingGold ||
       this.disableAlliances !== DEFAULT_OPTIONS.disableAlliances ||
       this.waterNukes !== DEFAULT_OPTIONS.waterNukes ||
+      this.neuralBot !== DEFAULT_OPTIONS.neuralBot ||
       this.disabledUnits.length > 0
     );
   }
@@ -406,6 +417,7 @@ export class SinglePlayerModal extends BaseModal {
     this.startingGoldValue = DEFAULT_OPTIONS.startingGoldValue;
     this.disableAlliances = DEFAULT_OPTIONS.disableAlliances;
     this.waterNukes = DEFAULT_OPTIONS.waterNukes;
+    this.neuralBot = DEFAULT_OPTIONS.neuralBot;
   }
 
   protected onOpen(): void {
@@ -490,6 +502,9 @@ export class SinglePlayerModal extends BaseModal {
         break;
       case "single_modal.water_nukes":
         this.waterNukes = checked;
+        break;
+      case "single_modal.neural_ai":
+        this.neuralBot = checked;
         break;
       default:
         break;
@@ -648,6 +663,24 @@ export class SinglePlayerModal extends BaseModal {
     ) as UsernameInput;
 
     await crazyGamesSDK.requestMidgameAd();
+    const playerCosmetics = await getPlayerCosmetics();
+    const players = [
+      {
+        clientID,
+        username: usernameInput.getUsername(),
+        clanTag: usernameInput.getClanTag() ?? null,
+        cosmetics: playerCosmetics,
+      },
+      ...(this.neuralBot
+        ? [
+            {
+              clientID: NEURAL_BOT_CLIENT_ID,
+              username: NEURAL_BOT_NAME,
+              clanTag: null,
+            },
+          ]
+        : []),
+    ];
 
     this.dispatchEvent(
       new CustomEvent("join-lobby", {
@@ -655,14 +688,7 @@ export class SinglePlayerModal extends BaseModal {
           gameID: gameID,
           gameStartInfo: {
             gameID: gameID,
-            players: [
-              {
-                clientID,
-                username: usernameInput.getUsername(),
-                clanTag: usernameInput.getClanTag() ?? null,
-                cosmetics: await getPlayerCosmetics(),
-              },
-            ],
+            players,
             config: {
               gameMap: this.selectedMap,
               gameMapSize: this.compactMap

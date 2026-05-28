@@ -223,6 +223,7 @@
     "compact_map": "Compact Map",
     "disable_alliances": "Disable alliances",
     "water_nukes": "Water nukes",
+    "neural_ai": "Neural AI",
     "max_timer": "Game length (minutes)",
     "max_timer_placeholder": "Mins",
     "max_timer_invalid": "Please enter a valid max timer value (1-120 minutes)",
@@ -1360,5 +1361,8 @@
   "fullscreen": {
     "enter": "Enter fullscreen",
     "exit": "Exit fullscreen"
+  },
+  "game_right_sidebar": {
+    "focus_neural_ai": "Focus Neural AI"
   }
 }
