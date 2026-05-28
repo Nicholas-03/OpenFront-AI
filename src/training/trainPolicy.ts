@@ -17,6 +17,7 @@ import {
 } from "./NeuralPolicy";
 import {
   OpenFrontTrainingEnv,
+  RewardBreakdown,
   TRAINING_ACTIONS,
   TRAINING_OPPONENT_AI,
   TrainingAction,
@@ -29,6 +30,7 @@ import { SeededRandom } from "./TrainingRandom";
 const DEFAULT_LEARNING_RATE = 0.001;
 
 type CurriculumMode = "auto" | "off";
+type RewardBreakdownKey = keyof RewardBreakdown;
 
 interface CurriculumPhase {
   actions: readonly TrainingAction[];
@@ -98,6 +100,24 @@ interface SavedTrainingSnapshot {
   policy?: SerializedNeuralPolicy;
 }
 
+interface DiagnosticsWindow {
+  actionCounts: number[];
+  actionSucceeded: number;
+  alive: number;
+  alliances: number;
+  aliveOpponents: number;
+  bestReward: number;
+  episodes: number;
+  ranks: number;
+  reward: number;
+  rewardBreakdown: Record<RewardBreakdownKey, number>;
+  ticks: number;
+  tiles: number;
+  transitions: number;
+  wins: number;
+  worstReward: number;
+}
+
 function numberArg(name: string, fallback: number): number {
   const index = process.argv.indexOf(name);
   if (index === -1) {
@@ -163,6 +183,124 @@ function curriculumPhaseForEpisode(
 
 function actionIndexes(actions: readonly TrainingAction[]): number[] {
   return actions.map((action) => TRAINING_ACTIONS.indexOf(action));
+}
+
+function newDiagnosticsWindow(): DiagnosticsWindow {
+  return {
+    actionCounts: new Array(TRAINING_ACTIONS.length).fill(0),
+    actionSucceeded: 0,
+    alive: 0,
+    alliances: 0,
+    aliveOpponents: 0,
+    bestReward: Number.NEGATIVE_INFINITY,
+    episodes: 0,
+    ranks: 0,
+    reward: 0,
+    rewardBreakdown: zeroRewardBreakdown(),
+    ticks: 0,
+    tiles: 0,
+    transitions: 0,
+    wins: 0,
+    worstReward: Number.POSITIVE_INFINITY,
+  };
+}
+
+function zeroRewardBreakdown(): Record<RewardBreakdownKey, number> {
+  return {
+    alive: 0,
+    alliance: 0,
+    attackAction: 0,
+    defensiveBuildPenalty: 0,
+    elimination: 0,
+    enemyTile: 0,
+    enemyTroop: 0,
+    gold: 0,
+    invalidActionPenalty: 0,
+    passiveBorderPenalty: 0,
+    rank: 0,
+    tile: 0,
+    total: 0,
+    troop: 0,
+    unit: 0,
+    win: 0,
+  };
+}
+
+function namedActionCounts(counts: readonly number[]): Record<string, number> {
+  return Object.fromEntries(
+    counts.map((count, index) => [TRAINING_ACTIONS[index], count]),
+  );
+}
+
+function normalizedActionCounts(
+  counts: readonly number[],
+  total: number,
+): Record<string, number> {
+  return Object.fromEntries(
+    counts.map((count, index) => [
+      TRAINING_ACTIONS[index],
+      total === 0 ? 0 : count / total,
+    ]),
+  );
+}
+
+function averageRewardBreakdown(
+  breakdown: Record<RewardBreakdownKey, number>,
+  episodes: number,
+): Record<RewardBreakdownKey, number> {
+  return Object.fromEntries(
+    Object.entries(breakdown).map(([key, value]) => [
+      key,
+      episodes === 0 ? 0 : value / episodes,
+    ]),
+  ) as Record<RewardBreakdownKey, number>;
+}
+
+function diagnosticHints(window: DiagnosticsWindow): string[] {
+  const hints: string[] = [];
+  const actionFractions = normalizedActionCounts(
+    window.actionCounts,
+    window.transitions,
+  );
+  const rewardAverage = averageRewardBreakdown(
+    window.rewardBreakdown,
+    window.episodes,
+  );
+  const attackFraction =
+    (actionFractions.attack_nearest ?? 0) +
+    (actionFractions.attack_weakest ?? 0) +
+    (actionFractions.attack_strongest ?? 0);
+
+  if (attackFraction < 0.12) {
+    hints.push("low_attack_rate");
+  }
+  if ((actionFractions.hold ?? 0) > 0.35) {
+    hints.push("too_many_holds");
+  }
+  if ((actionFractions.build_defense_post ?? 0) > 0.12) {
+    hints.push("defense_post_bias");
+  }
+  if (window.episodes > 0 && window.tiles / window.episodes < 350) {
+    hints.push("poor_expansion");
+  }
+  if (window.episodes > 0 && window.wins / window.episodes < 0.1) {
+    hints.push("low_win_rate");
+  }
+  if (rewardAverage.alive > Math.max(1, rewardAverage.enemyTile)) {
+    hints.push("reward_may_still_favor_survival");
+  }
+  if (
+    window.transitions > 0 &&
+    window.actionSucceeded / window.transitions < 0.85
+  ) {
+    hints.push("many_actions_failed");
+  }
+  return hints;
+}
+
+function appendJsonLine(filePath: string, record: unknown): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.appendFileSync(filePath, `${JSON.stringify(record)}\n`);
 }
 
 function discountedSamples(
@@ -346,6 +484,7 @@ async function main(): Promise<void> {
     : stringArg("--publicDir", path.join("resources", "training"));
   const logEvery = positiveIntegerArg("--logEvery", 1000);
   const checkpointEvery = positiveIntegerArg("--checkpointEvery", 1000);
+  const diagnosticsEvery = positiveIntegerArg("--diagnosticsEvery", 1000);
   const workerCount = positiveIntegerArg("--workers", 1);
   const learningRate = numberArg("--learningRate", DEFAULT_LEARNING_RATE);
   const restart = hasFlag("--restart");
@@ -353,6 +492,13 @@ async function main(): Promise<void> {
     "--restartFrom",
     path.join(outputDir, "openfront-policy.json"),
   );
+  const diagnosticsFile = hasFlag("--noDiagnostics")
+    ? null
+    : stringArg(
+        "--diagnosticsFile",
+        path.join(outputDir, "training-diagnostics.jsonl"),
+      );
+  const runId = new Date().toISOString().replace(/[:.]/g, "-");
 
   const random = new SeededRandom(seed);
   const envOptions = {
@@ -432,7 +578,7 @@ async function main(): Promise<void> {
   const episodeEnd =
     opponentAI === "heuristic" ? "maxTicks_or_match_finish" : "match_finish";
   console.log(
-    `training openfront policy: episodes=${trainForever ? "until Ctrl+C" : episodes} map=${mapName} opponents=${opponents} opponentAI=${opponentAI} maxTicks=${maxTicks} episodeEnd=${episodeEnd} curriculum=${curriculumMode} logEvery=${logEvery} checkpointEvery=${checkpointEvery} workers=${workerCount} learningRate=${learningRate} restart=${restart ? restartFrom : "off"} publicCopy=${publicDir ?? "off"}`,
+    `training openfront policy: episodes=${trainForever ? "until Ctrl+C" : episodes} map=${mapName} opponents=${opponents} opponentAI=${opponentAI} maxTicks=${maxTicks} episodeEnd=${episodeEnd} curriculum=${curriculumMode} logEvery=${logEvery} checkpointEvery=${checkpointEvery} diagnosticsEvery=${diagnosticsEvery} diagnostics=${diagnosticsFile ?? "off"} workers=${workerCount} learningRate=${learningRate} restart=${restart ? restartFrom : "off"} publicCopy=${publicDir ?? "off"}`,
   );
   console.log(`simulation map: ${env.mapDescription()}`);
   console.log(
@@ -442,6 +588,39 @@ async function main(): Promise<void> {
     `spatial input: global=${NEURAL_BOT_GLOBAL_MAP_SIZE}x${NEURAL_BOT_GLOBAL_MAP_SIZE} local=${NEURAL_BOT_LOCAL_MAP_SIZE}x${NEURAL_BOT_LOCAL_MAP_SIZE} channels=${NEURAL_BOT_MAP_CHANNEL_COUNT} pooled=${NEURAL_BOT_SPATIAL_POOL_SIZE}x${NEURAL_BOT_SPATIAL_POOL_SIZE} scalars=${NEURAL_BOT_SCALAR_INPUT_SIZE}`,
   );
   console.log(`actions: ${TRAINING_ACTIONS.join(", ")}`);
+
+  if (diagnosticsFile !== null) {
+    appendJsonLine(diagnosticsFile, {
+      type: "run_start",
+      runId,
+      startedAt: new Date().toISOString(),
+      config: {
+        checkpointEvery,
+        curriculum: curriculumMode,
+        decisionInterval,
+        diagnosticsEvery,
+        episodeEnd,
+        episodes: trainForever ? "until Ctrl+C" : episodes,
+        learningRate,
+        logEvery,
+        map: mapName,
+        mapDescription: env.mapDescription(),
+        maxTicks,
+        opponentAI,
+        opponents,
+        seed,
+        workers: workerCount,
+      },
+      network: {
+        actions: TRAINING_ACTIONS,
+        hiddenLayers: NEURAL_BOT_HIDDEN_LAYERS,
+        inputSize: env.inputSize,
+        outputSize: TRAINING_ACTIONS.length,
+        parameterCount: policy.parameterCount(),
+        scalarInputs: NEURAL_BOT_SCALAR_INPUT_SIZE,
+      },
+    });
+  }
 
   const startedAtMs = Date.now();
   let lastLogAtMs = startedAtMs;
@@ -453,6 +632,9 @@ async function main(): Promise<void> {
   let windowBestReward = Number.NEGATIVE_INFINITY;
   let latestEpisodeSummary: EpisodeRollout["summary"] | null = null;
   let lastCheckpointEpisode = latestEpisode;
+  let diagnosticsWindow = newDiagnosticsWindow();
+  let lastDiagnosticsEpisode = latestEpisode;
+  let latestTrainStats: ReturnType<NeuralPolicy["train"]> | null = null;
 
   const epsilonForEpisode = (episode: number): number =>
     trainForever ? 0.1 : Math.max(0.04, 0.25 * (1 - episode / episodes));
@@ -467,6 +649,38 @@ async function main(): Promise<void> {
     windowAlive += summary.alive ? 1 : 0;
     windowTiles += summary.ownedTiles;
     windowBestReward = Math.max(windowBestReward, summary.reward);
+  };
+
+  const recordDiagnostics = (rollout: EpisodeRollout): void => {
+    const { summary } = rollout;
+    diagnosticsWindow.episodes++;
+    diagnosticsWindow.reward += summary.reward;
+    diagnosticsWindow.alive += summary.alive ? 1 : 0;
+    diagnosticsWindow.wins += summary.won ? 1 : 0;
+    diagnosticsWindow.tiles += summary.ownedTiles;
+    diagnosticsWindow.ticks += summary.ticks;
+    diagnosticsWindow.ranks += summary.rank;
+    diagnosticsWindow.alliances += summary.alliances;
+    diagnosticsWindow.aliveOpponents += summary.aliveOpponents;
+    diagnosticsWindow.bestReward = Math.max(
+      diagnosticsWindow.bestReward,
+      summary.reward,
+    );
+    diagnosticsWindow.worstReward = Math.min(
+      diagnosticsWindow.worstReward,
+      summary.reward,
+    );
+
+    for (const transition of rollout.transitions) {
+      diagnosticsWindow.transitions++;
+      diagnosticsWindow.actionCounts[transition.action]++;
+      diagnosticsWindow.actionSucceeded += transition.actionSucceeded ? 1 : 0;
+      for (const [key, value] of Object.entries(
+        transition.rewardBreakdown,
+      ) as Array<[RewardBreakdownKey, number]>) {
+        diagnosticsWindow.rewardBreakdown[key] += value;
+      }
+    }
   };
 
   const logProgress = (
@@ -527,6 +741,85 @@ async function main(): Promise<void> {
     }
   };
 
+  const maybeWriteDiagnostics = (
+    trainStats: ReturnType<NeuralPolicy["train"]>,
+    force = false,
+  ): void => {
+    if (diagnosticsFile === null || diagnosticsWindow.episodes === 0) {
+      return;
+    }
+
+    const reachedInterval =
+      latestEpisode - lastDiagnosticsEpisode >= diagnosticsEvery;
+    if (!force && !reachedInterval) {
+      return;
+    }
+
+    const nowMs = Date.now();
+    const elapsedSeconds = (nowMs - startedAtMs) / 1000;
+    const episodes = diagnosticsWindow.episodes;
+    const transitions = diagnosticsWindow.transitions;
+    const rewardBreakdownAverage = averageRewardBreakdown(
+      diagnosticsWindow.rewardBreakdown,
+      episodes,
+    );
+    const actionFractions = normalizedActionCounts(
+      diagnosticsWindow.actionCounts,
+      transitions,
+    );
+    const record = {
+      type: "training_diagnostics",
+      runId,
+      writtenAt: new Date().toISOString(),
+      episode: latestEpisode,
+      window: {
+        fromEpisode: lastDiagnosticsEpisode + 1,
+        toEpisode: latestEpisode,
+        episodes,
+        transitions,
+        elapsedSeconds,
+        episodesPerSecond:
+          elapsedSeconds <= 0 ? 0 : latestEpisode / elapsedSeconds,
+        avgReward: diagnosticsWindow.reward / episodes,
+        bestReward: diagnosticsWindow.bestReward,
+        worstReward: diagnosticsWindow.worstReward,
+        aliveRate: diagnosticsWindow.alive / episodes,
+        winRate: diagnosticsWindow.wins / episodes,
+        avgTiles: diagnosticsWindow.tiles / episodes,
+        avgTicks: diagnosticsWindow.ticks / episodes,
+        avgRank: diagnosticsWindow.ranks / episodes,
+        avgAlliances: diagnosticsWindow.alliances / episodes,
+        avgAliveOpponents: diagnosticsWindow.aliveOpponents / episodes,
+        actionSuccessRate:
+          transitions === 0
+            ? 0
+            : diagnosticsWindow.actionSucceeded / transitions,
+      },
+      actions: {
+        counts: namedActionCounts(diagnosticsWindow.actionCounts),
+        fractions: actionFractions,
+      },
+      rewardBreakdown: {
+        totals: diagnosticsWindow.rewardBreakdown,
+        averages: rewardBreakdownAverage,
+      },
+      latest: latestEpisodeSummary,
+      training: {
+        clipped: trainStats.clipped,
+        gradNorm: trainStats.gradNorm,
+        loss: trainStats.loss,
+        maxAbsParameter: trainStats.maxAbsParameter,
+        skipped: trainStats.skipped,
+      },
+      curriculum: curriculumPhaseForEpisode(latestEpisode, curriculumMode).name,
+      hints: diagnosticHints(diagnosticsWindow),
+    };
+
+    appendJsonLine(diagnosticsFile, record);
+    diagnosticsWindow = newDiagnosticsWindow();
+    lastDiagnosticsEpisode = latestEpisode;
+  };
+
   const trainRollouts = (
     rollouts: EpisodeRollout[],
   ): ReturnType<NeuralPolicy["train"]> => {
@@ -566,8 +859,11 @@ async function main(): Promise<void> {
         }
 
         const trainStats = trainRollouts([rollout]);
+        latestTrainStats = trainStats;
         recordRollout(rollout);
+        recordDiagnostics(rollout);
         logProgress(trainStats, rollout.transitions);
+        maybeWriteDiagnostics(trainStats);
         maybeCheckpoint();
       }
     } else {
@@ -601,15 +897,22 @@ async function main(): Promise<void> {
         }
 
         const trainStats = trainRollouts(rollouts);
+        latestTrainStats = trainStats;
         for (const rollout of rollouts) {
           recordRollout(rollout);
+          recordDiagnostics(rollout);
         }
         logProgress(trainStats, allTransitions(rollouts));
+        maybeWriteDiagnostics(trainStats);
         maybeCheckpoint();
       }
     }
   } finally {
     await rolloutPool?.close();
+  }
+
+  if (latestTrainStats !== null) {
+    maybeWriteDiagnostics(latestTrainStats, true);
   }
 
   if (!stopRequested) {
@@ -620,6 +923,17 @@ async function main(): Promise<void> {
         `copied live-game policy to ${path.join(publicDir, "openfront-policy.json")}`,
       );
     }
+  }
+
+  if (diagnosticsFile !== null) {
+    appendJsonLine(diagnosticsFile, {
+      type: "run_end",
+      runId,
+      endedAt: new Date().toISOString(),
+      episode: latestEpisode,
+      status: stopRequested ? "interrupted" : "complete",
+      summary: latestSummary,
+    });
   }
 }
 

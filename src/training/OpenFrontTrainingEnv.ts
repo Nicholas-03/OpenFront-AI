@@ -77,6 +77,25 @@ interface OpponentRewardStats {
   troops: number;
 }
 
+export interface RewardBreakdown {
+  alive: number;
+  alliance: number;
+  attackAction: number;
+  defensiveBuildPenalty: number;
+  elimination: number;
+  enemyTile: number;
+  enemyTroop: number;
+  gold: number;
+  invalidActionPenalty: number;
+  passiveBorderPenalty: number;
+  rank: number;
+  tile: number;
+  total: number;
+  troop: number;
+  unit: number;
+  win: number;
+}
+
 export interface TrainingEnvOptions {
   decisionInterval: number;
   maxTicks: number;
@@ -87,16 +106,21 @@ export interface TrainingEnvOptions {
 }
 
 export interface StepResult {
+  actionSucceeded: boolean;
   done: boolean;
   reward: number;
+  rewardBreakdown: RewardBreakdown;
 }
 
 export interface EpisodeSummary {
   alive: boolean;
+  alliances: number;
+  aliveOpponents: number;
   ownedTiles: number;
   rank: number;
   reward: number;
   ticks: number;
+  won: boolean;
 }
 
 class TrainingConfig extends Config {
@@ -430,27 +454,35 @@ export class OpenFrontTrainingEnv {
         : 0;
     const aliveReward = this.learner.isAlive() ? 0.008 : -6;
     const invalidActionPenalty = actionSucceeded ? 0 : -0.12;
-    const reward =
-      tileReward +
-      enemyTileReward +
-      troopReward +
-      enemyTroopReward +
-      goldReward +
-      rankReward +
-      unitReward +
-      eliminationReward +
-      winReward +
-      attackActionReward +
-      allianceReward +
-      passiveBorderPenalty +
-      defensiveBuildPenalty +
-      aliveReward +
-      invalidActionPenalty;
+    const rewardBreakdown: RewardBreakdown = {
+      alive: aliveReward,
+      alliance: allianceReward,
+      attackAction: attackActionReward,
+      defensiveBuildPenalty,
+      elimination: eliminationReward,
+      enemyTile: enemyTileReward,
+      enemyTroop: enemyTroopReward,
+      gold: goldReward,
+      invalidActionPenalty,
+      passiveBorderPenalty,
+      rank: rankReward,
+      tile: tileReward,
+      total: 0,
+      troop: troopReward,
+      unit: unitReward,
+      win: winReward,
+    };
+    const reward = Object.entries(rewardBreakdown)
+      .filter(([key]) => key !== "total")
+      .reduce((acc, [, value]) => acc + value, 0);
+    rewardBreakdown.total = reward;
 
     this.totalReward += reward;
 
     return {
+      actionSucceeded,
       reward,
+      rewardBreakdown,
       done: this.done(),
     };
   }
@@ -471,12 +503,16 @@ export class OpenFrontTrainingEnv {
   }
 
   summary(): EpisodeSummary {
+    const opponentStats = this.opponentRewardStats();
     return {
       alive: this.learner.isAlive(),
+      alliances: this.learner.alliances().length,
+      aliveOpponents: opponentStats.alive,
       ownedTiles: this.learner.numTilesOwned(),
       rank: this.rank(this.learner),
       reward: this.totalReward,
       ticks: this.game.ticks(),
+      won: this.learnerWon(),
     };
   }
 

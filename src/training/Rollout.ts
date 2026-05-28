@@ -2,12 +2,15 @@ import { NeuralPolicy, PolicyGradientSample } from "./NeuralPolicy";
 import {
   EpisodeSummary,
   OpenFrontTrainingEnv,
+  RewardBreakdown,
   TRAINING_ACTIONS,
 } from "./OpenFrontTrainingEnv";
 import { SeededRandom } from "./TrainingRandom";
 
 export interface Transition extends PolicyGradientSample {
+  actionSucceeded: boolean;
   reward: number;
+  rewardBreakdown: RewardBreakdown;
 }
 
 export interface EpisodeRollout {
@@ -111,8 +114,10 @@ export async function runPolicyEpisode({
       activations: pass.activations,
       probs,
       action,
+      actionSucceeded: result.actionSucceeded,
       advantage: 0,
       reward: result.reward,
+      rewardBreakdown: result.rewardBreakdown,
     });
 
     state = env.state();
