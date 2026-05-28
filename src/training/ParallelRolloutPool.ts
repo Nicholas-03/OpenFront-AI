@@ -6,6 +6,7 @@ import { TrainingEnvOptions } from "./OpenFrontTrainingEnv";
 import { EpisodeRollout } from "./Rollout";
 
 interface RolloutJob {
+  allowedActionIndexes?: readonly number[];
   episode: number;
   envOptions: TrainingEnvOptions;
   epsilon: number;

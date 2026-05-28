@@ -1,0 +1,18 @@
+{
+  "map": {
+    "height": 64,
+    "num_land_tiles": 4096,
+    "width": 64
+  },
+  "map16x": {
+    "height": 16,
+    "num_land_tiles": 256,
+    "width": 16
+  },
+  "map4x": {
+    "height": 32,
+    "num_land_tiles": 1024,
+    "width": 32
+  },
+  "name": "Training Plains"
+}

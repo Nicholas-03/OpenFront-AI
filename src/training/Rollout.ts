@@ -17,6 +17,7 @@ export interface EpisodeRollout {
 }
 
 interface RunPolicyEpisodeOptions {
+  allowedActionIndexes?: readonly number[];
   env: OpenFrontTrainingEnv;
   episode: number;
   epsilon: number;
@@ -36,7 +37,53 @@ function sampleAction(probs: number[], random: SeededRandom): number {
   return probs.length - 1;
 }
 
+function maskProbabilities(probs: number[], mask: boolean[]): number[] {
+  const masked = probs.map((probability, index) =>
+    mask[index] ? probability : 0,
+  );
+  const total = masked.reduce((acc, value) => acc + value, 0);
+  if (Number.isFinite(total) && total > 0) {
+    return masked.map((probability) => probability / total);
+  }
+
+  const validCount = mask.filter(Boolean).length;
+  if (validCount === 0) {
+    return probs.map(() => 1 / probs.length);
+  }
+  return mask.map((valid) => (valid ? 1 / validCount : 0));
+}
+
+function actionMask(
+  env: OpenFrontTrainingEnv,
+  allowedActionIndexes?: readonly number[],
+): boolean[] {
+  const allowed =
+    allowedActionIndexes === undefined
+      ? null
+      : new Set<number>(allowedActionIndexes);
+  const mask = env
+    .validActionMask()
+    .map((valid, index) => valid && (allowed === null || allowed.has(index)));
+  if (mask.some(Boolean)) {
+    return mask;
+  }
+
+  const holdIndex = TRAINING_ACTIONS.indexOf("hold");
+  if (holdIndex !== -1) {
+    mask[holdIndex] = true;
+  }
+  return mask;
+}
+
+function randomMaskedAction(mask: boolean[], random: SeededRandom): number {
+  const validActions = mask
+    .map((valid, index) => (valid ? index : -1))
+    .filter((index) => index !== -1);
+  return validActions[random.int(validActions.length)];
+}
+
 export async function runPolicyEpisode({
+  allowedActionIndexes,
   env,
   episode,
   epsilon,
@@ -50,17 +97,19 @@ export async function runPolicyEpisode({
 
   while (!done && !shouldStop()) {
     const pass = policy.forward(state);
+    const mask = actionMask(env, allowedActionIndexes);
+    const probs = maskProbabilities(pass.probs, mask);
     const action =
       random.next() < epsilon
-        ? random.int(TRAINING_ACTIONS.length)
-        : sampleAction(pass.probs, random);
+        ? randomMaskedAction(mask, random)
+        : sampleAction(probs, random);
     const result = env.step(action);
 
     transitions.push({
       input: pass.input,
       hidden: pass.hidden,
       activations: pass.activations,
-      probs: pass.probs,
+      probs,
       action,
       advantage: 0,
       reward: result.reward,

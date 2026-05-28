@@ -158,21 +158,14 @@ export function tryNeuralBotAction(
   action: NeuralBotAction,
   maxParallelAttacks = MAX_NEURAL_PARALLEL_ATTACKS,
 ): boolean {
-  if (!player.isAlive()) {
+  if (!isNeuralBotActionAvailable(game, player, action, maxParallelAttacks)) {
     return false;
   }
 
   switch (action) {
     case "expand":
-      if (
-        player.troops() >= 500 &&
-        player.outgoingAttacks().length < maxParallelAttacks &&
-        borderStats(game, player).neutral > 0
-      ) {
-        game.addExecution(new AttackExecution(null, player, null));
-        return true;
-      }
-      return false;
+      game.addExecution(new AttackExecution(null, player, null));
+      return true;
     case "attack_nearest":
       return attackPlayer(
         game,
@@ -211,20 +204,86 @@ export function tryNeuralBotAction(
   }
 }
 
-function attackPlayer(
+export function isNeuralBotActionAvailable(
+  game: Game,
+  player: Player,
+  action: NeuralBotAction,
+  maxParallelAttacks = MAX_NEURAL_PARALLEL_ATTACKS,
+): boolean {
+  if (!player.isAlive()) {
+    return false;
+  }
+
+  switch (action) {
+    case "expand":
+      return (
+        player.troops() >= 500 &&
+        player.outgoingAttacks().length < maxParallelAttacks &&
+        borderStats(game, player).neutral > 0
+      );
+    case "attack_nearest":
+      return canAttackPlayer(
+        game,
+        player,
+        nearestOpponent(game, player),
+        maxParallelAttacks,
+      );
+    case "attack_weakest": {
+      const opponentsByStrength = byStrength(opponentsOf(game, player));
+      return canAttackPlayer(
+        game,
+        player,
+        opponentsByStrength[opponentsByStrength.length - 1],
+        maxParallelAttacks,
+      );
+    }
+    case "attack_strongest":
+      return canAttackPlayer(
+        game,
+        player,
+        byStrength(opponentsOf(game, player))[0],
+        maxParallelAttacks,
+      );
+    case "upgrade_structure":
+      return findUpgradeUnit(player) !== null;
+    case "build_city":
+    case "build_factory":
+    case "build_port":
+    case "build_warship":
+    case "build_defense_post":
+    case "build_sam_launcher":
+    case "build_missile_silo":
+      return (
+        findBuildTile(game, player, NEURAL_BUILD_ACTIONS[action]!) !== null
+      );
+    case "hold":
+      return true;
+  }
+}
+
+function canAttackPlayer(
   game: Game,
   player: Player,
   target: Player | TerraNullius | null | undefined,
   maxParallelAttacks: number,
-): boolean {
-  if (
+): target is Player {
+  return !(
     player.troops() < 500 ||
     !target ||
     !target.isPlayer() ||
     !player.canAttackPlayer(target) ||
     !player.sharesBorderWith(target) ||
     player.outgoingAttacks().length >= maxParallelAttacks
-  ) {
+  );
+}
+
+function attackPlayer(
+  game: Game,
+  player: Player,
+  target: Player | TerraNullius | null | undefined,
+  maxParallelAttacks: number,
+): boolean {
+  if (!canAttackPlayer(game, player, target, maxParallelAttacks)) {
     return false;
   }
 

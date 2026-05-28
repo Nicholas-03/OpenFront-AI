@@ -13,10 +13,10 @@ import {
 import {
   borderStats,
   byStrength,
+  isNeuralBotActionAvailable,
   nearestOpponent,
   opponentsOf,
   rankPlayer,
-  strategicUnitScore,
   tryNeuralBotAction,
 } from "../core/ai/NeuralBotTactics";
 import { Config } from "../core/configuration/Config";
@@ -36,6 +36,7 @@ import {
   PlayerInfo,
   PlayerType,
   TerraNullius,
+  UnitType,
 } from "../core/game/Game";
 import { createGame } from "../core/game/GameImpl";
 import { TileRef } from "../core/game/GameMap";
@@ -59,6 +60,17 @@ const MIXED_OPPONENT_AI_ROTATION = [
   "nation",
   "heuristic",
 ] as const satisfies readonly ResolvedOpponentAI[];
+const ATTACK_ACTIONS = new Set<TrainingAction>([
+  "attack_nearest",
+  "attack_weakest",
+  "attack_strongest",
+]);
+
+interface OpponentRewardStats {
+  alive: number;
+  tiles: number;
+  troops: number;
+}
 
 export interface TrainingEnvOptions {
   decisionInterval: number;
@@ -163,6 +175,22 @@ function createTrainingConfig(): GameConfig {
   };
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function trainingUnitScore(player: Player): number {
+  return (
+    player.unitCount(UnitType.City) * 3 +
+    player.unitCount(UnitType.Factory) * 3 +
+    player.unitCount(UnitType.Port) * 1.5 +
+    player.unitCount(UnitType.Warship) * 2 +
+    player.unitCount(UnitType.MissileSilo) * 1.5 +
+    player.unitCount(UnitType.SAMLauncher) * 0.35 +
+    player.unitCount(UnitType.DefensePost) * 0.15
+  );
+}
+
 function suppressExpectedTrainingWarnings(callback: () => void): void {
   const originalWarn = console.warn;
   console.warn = (...args: unknown[]) => {
@@ -193,6 +221,7 @@ export class OpenFrontTrainingEnv {
   private manifest: MapManifest;
   private heuristicOpponents: Player[] = [];
   private totalReward = 0;
+  private positiveUnitReward = 0;
 
   constructor(private readonly options: TrainingEnvOptions) {
     this.rng = new SeededRandom(options.seed);
@@ -218,8 +247,13 @@ export class OpenFrontTrainingEnv {
     ) as MapManifest;
   }
 
+  mapDescription(): string {
+    return `${this.manifest.name} ${this.manifest.map.width}x${this.manifest.map.height} land=${this.manifest.map.num_land_tiles}`;
+  }
+
   async reset(episode: number): Promise<number[]> {
     this.totalReward = 0;
+    this.positiveUnitReward = 0;
     this.rng = new SeededRandom(this.options.seed + episode * 9973);
 
     const gameMap = await genTerrainFromBin(
@@ -331,15 +365,16 @@ export class OpenFrontTrainingEnv {
   }
 
   step(actionIndex: number): StepResult {
+    const action = TRAINING_ACTIONS[actionIndex];
     const beforeTiles = this.learner.numTilesOwned();
     const beforeTroops = this.learner.troops();
+    const beforeGold = Number(this.learner.gold());
     const beforeRank = this.rank(this.learner);
-    const beforeStrategicUnits = strategicUnitScore(this.learner);
+    const beforeTrainingUnits = trainingUnitScore(this.learner);
+    const beforeOpponents = this.opponentRewardStats();
+    const beforeBorders = this.borderStats(this.learner);
 
-    const actionSucceeded = this.applyAction(
-      this.learner,
-      TRAINING_ACTIONS[actionIndex],
-    );
+    const actionSucceeded = this.applyAction(this.learner, action);
     for (const opponent of this.heuristicOpponents) {
       this.applyAction(opponent, this.heuristicAction(opponent));
     }
@@ -352,19 +387,52 @@ export class OpenFrontTrainingEnv {
 
     const afterTiles = this.learner.numTilesOwned();
     const afterTroops = this.learner.troops();
+    const afterGold = Number(this.learner.gold());
     const afterRank = this.rank(this.learner);
-    const afterStrategicUnits = strategicUnitScore(this.learner);
-    const tileReward = (afterTiles - beforeTiles) / 35;
-    const troopReward = (afterTroops - beforeTroops) / 50_000;
+    const afterTrainingUnits = trainingUnitScore(this.learner);
+    const afterOpponents = this.opponentRewardStats();
+    const tileReward = (afterTiles - beforeTiles) / 25;
+    const enemyTileReward =
+      Math.max(0, beforeOpponents.tiles - afterOpponents.tiles) / 18;
+    const troopReward = clamp(
+      (afterTroops - beforeTroops) / 120_000,
+      -0.15,
+      0.15,
+    );
+    const enemyTroopReward =
+      Math.max(0, beforeOpponents.troops - afterOpponents.troops) / 80_000;
+    const goldReward = clamp((afterGold - beforeGold) / 300_000, -0.08, 0.12);
     const rankReward = (beforeRank - afterRank) * 0.5;
-    const unitReward = (afterStrategicUnits - beforeStrategicUnits) * 0.25;
-    const aliveReward = this.learner.isAlive() ? 0.03 : -4;
-    const invalidActionPenalty = actionSucceeded ? 0 : -0.08;
+    const unitReward = this.cappedPositiveUnitReward(
+      (afterTrainingUnits - beforeTrainingUnits) * 0.12,
+    );
+    const eliminationReward =
+      Math.max(0, beforeOpponents.alive - afterOpponents.alive) * 8;
+    const winReward = this.learnerWon() ? 24 : 0;
+    const attackActionReward =
+      actionSucceeded && ATTACK_ACTIONS.has(action) ? 0.2 : 0;
+    const passiveBorderPenalty =
+      action === "hold" && beforeBorders.enemy > 0 ? -0.08 : 0;
+    const defensiveBuildPenalty =
+      actionSucceeded &&
+      (action === "build_defense_post" || action === "build_sam_launcher")
+        ? -0.12
+        : 0;
+    const aliveReward = this.learner.isAlive() ? 0.008 : -6;
+    const invalidActionPenalty = actionSucceeded ? 0 : -0.12;
     const reward =
       tileReward +
+      enemyTileReward +
       troopReward +
+      enemyTroopReward +
+      goldReward +
       rankReward +
       unitReward +
+      eliminationReward +
+      winReward +
+      attackActionReward +
+      passiveBorderPenalty +
+      defensiveBuildPenalty +
       aliveReward +
       invalidActionPenalty;
 
@@ -385,6 +453,12 @@ export class OpenFrontTrainingEnv {
     });
   }
 
+  validActionMask(): boolean[] {
+    return TRAINING_ACTIONS.map((action) =>
+      isNeuralBotActionAvailable(this.game, this.learner, action),
+    );
+  }
+
   summary(): EpisodeSummary {
     return {
       alive: this.learner.isAlive(),
@@ -397,6 +471,42 @@ export class OpenFrontTrainingEnv {
 
   private applyAction(player: Player, action: TrainingAction): boolean {
     return tryNeuralBotAction(this.game, player, action);
+  }
+
+  private cappedPositiveUnitReward(delta: number): number {
+    if (delta <= 0) {
+      return delta;
+    }
+
+    const cap = 4;
+    const remaining = Math.max(0, cap - this.positiveUnitReward);
+    const reward = Math.min(delta, remaining);
+    this.positiveUnitReward += reward;
+    return reward;
+  }
+
+  private opponentRewardStats(): OpponentRewardStats {
+    return this.game
+      .allPlayers()
+      .filter((player) => player !== this.learner)
+      .reduce(
+        (stats, player) => ({
+          alive: stats.alive + (player.isAlive() ? 1 : 0),
+          tiles: stats.tiles + player.numTilesOwned(),
+          troops: stats.troops + (player.isAlive() ? player.troops() : 0),
+        }),
+        { alive: 0, tiles: 0, troops: 0 },
+      );
+  }
+
+  private learnerWon(): boolean {
+    const winner = this.game.getWinner();
+    return (
+      winner === this.learner ||
+      (winner === null &&
+        this.learner.isAlive() &&
+        this.game.players().length === 1)
+    );
   }
 
   private heuristicAction(player: Player): TrainingAction {

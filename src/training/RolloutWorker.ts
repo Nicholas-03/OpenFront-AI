@@ -13,6 +13,7 @@ import { SeededRandom } from "./TrainingRandom";
 interface RolloutRequest {
   type: "rollout";
   id: number;
+  allowedActionIndexes?: readonly number[];
   episode: number;
   envOptions: TrainingEnvOptions;
   epsilon: number;
@@ -80,6 +81,7 @@ async function handleRollout(message: RolloutRequest): Promise<void> {
     }
 
     const rollout = await runPolicyEpisode({
+      allowedActionIndexes: message.allowedActionIndexes,
       env: rolloutEnv,
       episode: message.episode,
       epsilon: message.epsilon,

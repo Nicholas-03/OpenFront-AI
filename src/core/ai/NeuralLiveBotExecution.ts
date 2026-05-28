@@ -15,6 +15,7 @@ import {
   NeuralBotAction,
 } from "./NeuralBotPolicy";
 import {
+  isNeuralBotActionAvailable,
   MAX_NEURAL_PARALLEL_ATTACKS,
   tryNeuralBotAction,
 } from "./NeuralBotTactics";
@@ -183,6 +184,14 @@ export class NeuralLiveBotExecution implements Execution {
       .map(({ action }) => action)
       .filter((action): action is NeuralBotAction =>
         NEURAL_BOT_ACTIONS.includes(action as NeuralBotAction),
+      )
+      .filter((action) =>
+        isNeuralBotActionAvailable(
+          this.mg,
+          player,
+          action,
+          MAX_NEURAL_PARALLEL_ATTACKS,
+        ),
       );
   }
 

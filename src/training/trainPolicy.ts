@@ -19,6 +19,7 @@ import {
   OpenFrontTrainingEnv,
   TRAINING_ACTIONS,
   TRAINING_OPPONENT_AI,
+  TrainingAction,
   TrainingOpponentAI,
 } from "./OpenFrontTrainingEnv";
 import { ParallelRolloutPool } from "./ParallelRolloutPool";
@@ -26,6 +27,62 @@ import { EpisodeRollout, runPolicyEpisode, Transition } from "./Rollout";
 import { SeededRandom } from "./TrainingRandom";
 
 const DEFAULT_LEARNING_RATE = 0.001;
+
+type CurriculumMode = "auto" | "off";
+
+interface CurriculumPhase {
+  actions: readonly TrainingAction[];
+  name: string;
+}
+
+const FULL_ACTION_PHASE: CurriculumPhase = {
+  name: "full",
+  actions: TRAINING_ACTIONS,
+};
+
+const CURRICULUM_PHASES: Array<CurriculumPhase & { throughEpisode: number }> = [
+  {
+    name: "expand_attack",
+    throughEpisode: 2_000,
+    actions: [
+      "expand",
+      "attack_nearest",
+      "attack_weakest",
+      "attack_strongest",
+      "hold",
+    ],
+  },
+  {
+    name: "economy",
+    throughEpisode: 5_000,
+    actions: [
+      "expand",
+      "attack_nearest",
+      "attack_weakest",
+      "attack_strongest",
+      "build_city",
+      "build_factory",
+      "upgrade_structure",
+      "hold",
+    ],
+  },
+  {
+    name: "navy_economy",
+    throughEpisode: 8_000,
+    actions: [
+      "expand",
+      "attack_nearest",
+      "attack_weakest",
+      "attack_strongest",
+      "build_city",
+      "build_factory",
+      "build_port",
+      "build_warship",
+      "upgrade_structure",
+      "hold",
+    ],
+  },
+];
 
 interface SavedTrainingSnapshot {
   actions?: unknown;
@@ -73,6 +130,32 @@ function opponentAIArg(): TrainingOpponentAI {
   throw new Error(
     `Invalid --opponentAI "${value}". Expected one of: ${TRAINING_OPPONENT_AI.join(", ")}`,
   );
+}
+
+function curriculumModeArg(): CurriculumMode {
+  const value = stringArg("--curriculum", "auto");
+  if (value === "auto" || value === "off") {
+    return value;
+  }
+  throw new Error('Invalid --curriculum value. Expected "auto" or "off".');
+}
+
+function curriculumPhaseForEpisode(
+  episode: number,
+  mode: CurriculumMode,
+): CurriculumPhase {
+  if (mode === "off") {
+    return FULL_ACTION_PHASE;
+  }
+
+  return (
+    CURRICULUM_PHASES.find((phase) => episode <= phase.throughEpisode) ??
+    FULL_ACTION_PHASE
+  );
+}
+
+function actionIndexes(actions: readonly TrainingAction[]): number[] {
+  return actions.map((action) => TRAINING_ACTIONS.indexOf(action));
 }
 
 function discountedSamples(
@@ -247,8 +330,9 @@ async function main(): Promise<void> {
   const decisionInterval = numberArg("--decisionInterval", 20);
   const opponents = numberArg("--opponents", 3);
   const seed = numberArg("--seed", 42);
-  const mapName = stringArg("--map", "plains");
+  const mapName = stringArg("--map", "training_plains");
   const opponentAI = opponentAIArg();
+  const curriculumMode = curriculumModeArg();
   const outputDir = stringArg("--outDir", "training-output");
   const publicDir = hasFlag("--noPublicCopy")
     ? null
@@ -341,8 +425,9 @@ async function main(): Promise<void> {
   const episodeEnd =
     opponentAI === "heuristic" ? "maxTicks_or_match_finish" : "match_finish";
   console.log(
-    `training openfront policy: episodes=${trainForever ? "until Ctrl+C" : episodes} map=${mapName} opponents=${opponents} opponentAI=${opponentAI} maxTicks=${maxTicks} episodeEnd=${episodeEnd} logEvery=${logEvery} checkpointEvery=${checkpointEvery} workers=${workerCount} learningRate=${learningRate} restart=${restart ? restartFrom : "off"} publicCopy=${publicDir ?? "off"}`,
+    `training openfront policy: episodes=${trainForever ? "until Ctrl+C" : episodes} map=${mapName} opponents=${opponents} opponentAI=${opponentAI} maxTicks=${maxTicks} episodeEnd=${episodeEnd} curriculum=${curriculumMode} logEvery=${logEvery} checkpointEvery=${checkpointEvery} workers=${workerCount} learningRate=${learningRate} restart=${restart ? restartFrom : "off"} publicCopy=${publicDir ?? "off"}`,
   );
+  console.log(`simulation map: ${env.mapDescription()}`);
   console.log(
     `network: ${[env.inputSize, ...NEURAL_BOT_HIDDEN_LAYERS, TRAINING_ACTIONS.length].join(" -> ")} (${policy.parameterCount()} parameters)`,
   );
@@ -411,6 +496,7 @@ async function main(): Promise<void> {
           `aliveRate=${((windowAlive / windowEpisodes) * 100).toFixed(1)}%`,
           `avgTiles=${(windowTiles / windowEpisodes).toFixed(0)}`,
           `bestReward=${windowBestReward.toFixed(2)}`,
+          `curriculum=${curriculumPhaseForEpisode(latestEpisode, curriculumMode).name}`,
           actionCounts(transitions),
         ].join(" "),
       );
@@ -454,7 +540,12 @@ async function main(): Promise<void> {
         !stopRequested && (trainForever || episode <= episodes);
         episode++
       ) {
+        const curriculumPhase = curriculumPhaseForEpisode(
+          episode,
+          curriculumMode,
+        );
         const rollout = await runPolicyEpisode({
+          allowedActionIndexes: actionIndexes(curriculumPhase.actions),
           env,
           episode,
           epsilon: epsilonForEpisode(episode),
@@ -481,7 +572,12 @@ async function main(): Promise<void> {
         const snapshot = policy.toJSON();
         const jobs = Array.from({ length: remainingEpisodes }, (_, index) => {
           const episode = latestEpisode + index + 1;
+          const curriculumPhase = curriculumPhaseForEpisode(
+            episode,
+            curriculumMode,
+          );
           return {
+            allowedActionIndexes: actionIndexes(curriculumPhase.actions),
             envOptions,
             episode,
             epsilon: epsilonForEpisode(episode),
