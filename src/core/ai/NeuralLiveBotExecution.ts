@@ -4,7 +4,10 @@ import { Execution, Game, Player, PlayerID } from "../game/Game";
 import { TileRef } from "../game/GameMap";
 import { PseudoRandom } from "../PseudoRandom";
 import { simpleHash } from "../Util";
-import { buildNeuralBotInput } from "./NeuralBotFeatures";
+import {
+  buildNeuralBotInput,
+  NEURAL_BOT_LONG_GAME_TICK_HORIZON,
+} from "./NeuralBotFeatures";
 import {
   forwardNeuralPolicy,
   LoadedNeuralPolicy,
@@ -126,10 +129,6 @@ export class NeuralLiveBotExecution implements Execution {
   }
 
   private decide(player: Player): void {
-    if (player.outgoingAttacks().length > 8) {
-      return;
-    }
-
     const rankedActions = this.policy
       ? this.rankedPolicyActions(player)
       : ([
@@ -201,7 +200,14 @@ export class NeuralLiveBotExecution implements Execution {
       game: this.mg,
       player,
       opponentBaseline: Math.max(1, this.mg.allPlayers().length - 1),
-      tickHorizon: Math.max(1, this.mg.config().numSpawnPhaseTurns() * 6),
+      tickHorizon: this.liveTickHorizon(),
     });
+  }
+
+  private liveTickHorizon(): number {
+    const maxTimerMinutes = this.mg.config().gameConfig().maxTimerValue;
+    return maxTimerMinutes === null || maxTimerMinutes === undefined
+      ? NEURAL_BOT_LONG_GAME_TICK_HORIZON
+      : Math.max(NEURAL_BOT_LONG_GAME_TICK_HORIZON, maxTimerMinutes * 60 * 10);
   }
 }

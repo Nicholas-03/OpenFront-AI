@@ -4,6 +4,7 @@ import path from "node:path";
 import {
   NEURAL_BOT_GLOBAL_MAP_SIZE,
   NEURAL_BOT_LOCAL_MAP_SIZE,
+  NEURAL_BOT_LONG_GAME_TICK_HORIZON,
   NEURAL_BOT_MAP_CHANNEL_COUNT,
   NEURAL_BOT_SCALAR_INPUT_SIZE,
   NEURAL_BOT_SPATIAL_POOL_SIZE,
@@ -227,7 +228,7 @@ async function main(): Promise<void> {
   const episodesArg = optionalNumberArg("--episodes");
   const trainForever = episodesArg === undefined || episodesArg <= 0;
   const episodes = trainForever ? Number.POSITIVE_INFINITY : episodesArg;
-  const maxTicks = numberArg("--maxTicks", 700);
+  const maxTicks = numberArg("--maxTicks", NEURAL_BOT_LONG_GAME_TICK_HORIZON);
   const decisionInterval = numberArg("--decisionInterval", 20);
   const opponents = numberArg("--opponents", 3);
   const seed = numberArg("--seed", 42);

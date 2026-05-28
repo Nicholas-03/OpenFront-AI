@@ -73,6 +73,7 @@ export const NEURAL_BOT_GLOBAL_MAP_SIZE = 64;
 export const NEURAL_BOT_LOCAL_MAP_SIZE = 32;
 export const NEURAL_BOT_SPATIAL_POOL_SIZE = 16;
 export const NEURAL_BOT_LOCAL_VIEW_RADIUS_TILES = 48;
+export const NEURAL_BOT_LONG_GAME_TICK_HORIZON = 6_000;
 
 export const NEURAL_BOT_MAP_CHANNEL_NAMES = [
   "terrain_land",
