@@ -19,6 +19,7 @@ export interface TrainStats {
   loss: number;
   gradNorm: number;
   clipped: boolean;
+  learningRateScale: number;
   maxAbsParameter: number;
   skipped: boolean;
 }
@@ -347,11 +348,16 @@ export class NeuralPolicy {
     };
   }
 
-  train(samples: PolicyGradientSample[]): TrainStats {
+  train(samples: PolicyGradientSample[], learningRateScale = 1): TrainStats {
+    const safeLearningRateScale =
+      Number.isFinite(learningRateScale) && learningRateScale > 0
+        ? learningRateScale
+        : 1;
     const skippedStats = (): TrainStats => ({
       loss: 0,
       gradNorm: 0,
       clipped: false,
+      learningRateScale: safeLearningRateScale,
       maxAbsParameter: this.maxAbsParameter(),
       skipped: true,
     });
@@ -465,7 +471,9 @@ export class NeuralPolicy {
       gradNorm > this.maxGradNorm && gradNorm > 0
         ? this.maxGradNorm / gradNorm
         : 1;
-    const scale = (this.learningRate / samples.length) * clipScale;
+    const scale =
+      ((this.learningRate * safeLearningRateScale) / samples.length) *
+      clipScale;
 
     for (let layer = 0; layer < this.weights.length; layer++) {
       for (let output = 0; output < this.weights[layer].length; output++) {
@@ -493,6 +501,7 @@ export class NeuralPolicy {
       loss: averageLoss,
       gradNorm,
       clipped: clipScale < 1,
+      learningRateScale: safeLearningRateScale,
       maxAbsParameter: this.maxAbsParameter(),
       skipped: false,
     };

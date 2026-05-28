@@ -28,8 +28,14 @@ import { EpisodeRollout, runPolicyEpisode, Transition } from "./Rollout";
 import { SeededRandom } from "./TrainingRandom";
 
 const DEFAULT_LEARNING_RATE = 0.001;
+const DEFAULT_LEARNING_RATE_DECAY_FACTOR = 0.35;
+const DEFAULT_LEARNING_RATE_DECAY_START = 10_000;
+const DEFAULT_OPPONENT_RAMP_EPISODE = 10_000;
+const LATEST_POLICY_FILE = "openfront-policy.json";
+const BEST_POLICY_FILE = "openfront-policy-best.json";
 
 type CurriculumMode = "auto" | "off";
+type OpponentCurriculumMode = "auto" | "off";
 type RewardBreakdownKey = keyof RewardBreakdown;
 
 interface CurriculumPhase {
@@ -131,6 +137,15 @@ function positiveIntegerArg(name: string, fallback: number): number {
   return Math.max(1, Math.floor(numberArg(name, fallback)));
 }
 
+function boundedNumberArg(
+  name: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  return Math.min(max, Math.max(min, numberArg(name, fallback)));
+}
+
 function optionalNumberArg(name: string): number | undefined {
   const index = process.argv.indexOf(name);
   if (index === -1) {
@@ -165,6 +180,40 @@ function curriculumModeArg(): CurriculumMode {
     return value;
   }
   throw new Error('Invalid --curriculum value. Expected "auto" or "off".');
+}
+
+function opponentCurriculumModeArg(): OpponentCurriculumMode {
+  const value = stringArg("--opponentCurriculum", "auto");
+  if (value === "auto" || value === "off") {
+    return value;
+  }
+  throw new Error(
+    'Invalid --opponentCurriculum value. Expected "auto" or "off".',
+  );
+}
+
+function opponentStartFor(
+  opponents: number,
+  requestedStart: number,
+  mode: OpponentCurriculumMode,
+): number {
+  if (mode === "off") {
+    return opponents;
+  }
+  return Math.max(1, Math.min(opponents, Math.floor(requestedStart)));
+}
+
+function activeOpponentsForEpisode(
+  episode: number,
+  opponents: number,
+  opponentStart: number,
+  opponentRampEpisode: number,
+  mode: OpponentCurriculumMode,
+): number {
+  if (mode === "off" || episode >= opponentRampEpisode) {
+    return opponents;
+  }
+  return opponentStart;
 }
 
 function curriculumPhaseForEpisode(
@@ -270,6 +319,9 @@ function diagnosticHints(window: DiagnosticsWindow): string[] {
     (actionFractions.attack_nearest ?? 0) +
     (actionFractions.attack_weakest ?? 0) +
     (actionFractions.attack_strongest ?? 0);
+  const allianceRequestFraction =
+    (actionFractions.request_alliance_nearest ?? 0) +
+    (actionFractions.request_alliance_strongest ?? 0);
 
   if (attackFraction < 0.12) {
     hints.push("low_attack_rate");
@@ -279,6 +331,13 @@ function diagnosticHints(window: DiagnosticsWindow): string[] {
   }
   if ((actionFractions.build_defense_post ?? 0) > 0.12) {
     hints.push("defense_post_bias");
+  }
+  if (
+    allianceRequestFraction > 0.08 &&
+    window.episodes > 0 &&
+    window.alliances / window.episodes < 0.1
+  ) {
+    hints.push("alliance_requests_not_converting");
   }
   if (window.episodes > 0 && window.tiles / window.episodes < 350) {
     hints.push("poor_expansion");
@@ -433,16 +492,46 @@ function loadRestartPolicy(
   }
 }
 
+function loadBestWindowReward(bestPath: string): number {
+  if (!fs.existsSync(bestPath)) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  try {
+    const snapshot = JSON.parse(
+      fs.readFileSync(bestPath, "utf8"),
+    ) as SavedTrainingSnapshot;
+    const summary = snapshot.summary;
+    if (
+      typeof summary === "object" &&
+      summary !== null &&
+      "bestWindowAvgReward" in summary
+    ) {
+      const value = (summary as { bestWindowAvgReward?: unknown })
+        .bestWindowAvgReward;
+      if (typeof value === "number" && Number.isFinite(value)) {
+        return value;
+      }
+    }
+  } catch {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  return Number.NEGATIVE_INFINITY;
+}
+
 function savePolicySnapshot(
   outputDir: string,
   publicDir: string | null,
+  fileName: string,
   episode: number,
   summary: unknown,
   policy: NeuralPolicy,
 ): string {
+  const outputPath = path.join(outputDir, fileName);
   if (!policy.isStable()) {
     console.warn("policy is unstable; refusing to save this checkpoint");
-    return path.join(outputDir, "openfront-policy.json");
+    return outputPath;
   }
 
   const snapshot = JSON.stringify(
@@ -455,12 +544,11 @@ function savePolicySnapshot(
     null,
     2,
   );
-  const outputPath = path.join(outputDir, "openfront-policy.json");
 
   fs.mkdirSync(outputDir, { recursive: true });
   fs.writeFileSync(outputPath, snapshot);
   if (publicDir !== null) {
-    const publicPath = path.join(publicDir, "openfront-policy.json");
+    const publicPath = path.join(publicDir, fileName);
     fs.mkdirSync(publicDir, { recursive: true });
     fs.writeFileSync(publicPath, snapshot);
   }
@@ -473,11 +561,25 @@ async function main(): Promise<void> {
   const episodes = trainForever ? Number.POSITIVE_INFINITY : episodesArg;
   const maxTicks = numberArg("--maxTicks", NEURAL_BOT_LONG_GAME_TICK_HORIZON);
   const decisionInterval = numberArg("--decisionInterval", 20);
-  const opponents = numberArg("--opponents", 3);
+  const opponents = positiveIntegerArg("--opponents", 3);
   const seed = numberArg("--seed", 42);
   const mapName = stringArg("--map", "training_plains");
   const opponentAI = opponentAIArg();
   const curriculumMode = curriculumModeArg();
+  const opponentCurriculumMode = opponentCurriculumModeArg();
+  const requestedOpponentStart = positiveIntegerArg(
+    "--opponentStart",
+    Math.min(opponents, 3),
+  );
+  const opponentStart = opponentStartFor(
+    opponents,
+    requestedOpponentStart,
+    opponentCurriculumMode,
+  );
+  const opponentRampEpisode = positiveIntegerArg(
+    "--opponentRampEpisode",
+    DEFAULT_OPPONENT_RAMP_EPISODE,
+  );
   const outputDir = stringArg("--outDir", "training-output");
   const publicDir = hasFlag("--noPublicCopy")
     ? null
@@ -487,10 +589,20 @@ async function main(): Promise<void> {
   const diagnosticsEvery = positiveIntegerArg("--diagnosticsEvery", 1000);
   const workerCount = positiveIntegerArg("--workers", 1);
   const learningRate = numberArg("--learningRate", DEFAULT_LEARNING_RATE);
+  const learningRateDecayStart = positiveIntegerArg(
+    "--learningRateDecayStart",
+    DEFAULT_LEARNING_RATE_DECAY_START,
+  );
+  const learningRateDecayFactor = boundedNumberArg(
+    "--learningRateDecayFactor",
+    DEFAULT_LEARNING_RATE_DECAY_FACTOR,
+    0.05,
+    1,
+  );
   const restart = hasFlag("--restart");
   const restartFrom = stringArg(
     "--restartFrom",
-    path.join(outputDir, "openfront-policy.json"),
+    path.join(outputDir, LATEST_POLICY_FILE),
   );
   const diagnosticsFile = hasFlag("--noDiagnostics")
     ? null
@@ -506,6 +618,10 @@ async function main(): Promise<void> {
     maxTicks,
     mapName,
     opponentAI,
+    opponentRampEpisode:
+      opponentCurriculumMode === "auto" ? opponentRampEpisode : undefined,
+    opponentStart:
+      opponentCurriculumMode === "auto" ? opponentStart : undefined,
     opponents,
     seed,
   };
@@ -521,7 +637,9 @@ async function main(): Promise<void> {
   );
 
   fs.mkdirSync(outputDir, { recursive: true });
-  let lastSavedPath = path.join(outputDir, "openfront-policy.json");
+  let lastSavedPath = path.join(outputDir, LATEST_POLICY_FILE);
+  let bestSavedPath = path.join(outputDir, BEST_POLICY_FILE);
+  let bestWindowReward = loadBestWindowReward(bestSavedPath);
   let latestEpisode = 0;
   let latestSummary: unknown = {
     interrupted: false,
@@ -551,6 +669,7 @@ async function main(): Promise<void> {
     lastSavedPath = savePolicySnapshot(
       outputDir,
       publicDir,
+      LATEST_POLICY_FILE,
       latestEpisode,
       {
         ...(typeof latestSummary === "object" && latestSummary !== null
@@ -569,7 +688,7 @@ async function main(): Promise<void> {
     console.log(`saved trained policy snapshot to ${lastSavedPath}`);
     if (publicDir !== null) {
       console.log(
-        `copied live-game policy to ${path.join(publicDir, "openfront-policy.json")}`,
+        `copied live-game policy to ${path.join(publicDir, LATEST_POLICY_FILE)}`,
       );
     }
     console.log("Stopping after the current episode cleanup.");
@@ -577,8 +696,16 @@ async function main(): Promise<void> {
 
   const episodeEnd =
     opponentAI === "heuristic" ? "maxTicks_or_match_finish" : "match_finish";
+  const opponentCurriculumSummary =
+    opponentCurriculumMode === "auto"
+      ? `${opponentStart}->${opponents}@${opponentRampEpisode}`
+      : "off";
+  const learningRateScheduleSummary =
+    learningRateDecayFactor < 1
+      ? `${learningRate} then x${learningRateDecayFactor}@${learningRateDecayStart}`
+      : `${learningRate}`;
   console.log(
-    `training openfront policy: episodes=${trainForever ? "until Ctrl+C" : episodes} map=${mapName} opponents=${opponents} opponentAI=${opponentAI} maxTicks=${maxTicks} episodeEnd=${episodeEnd} curriculum=${curriculumMode} logEvery=${logEvery} checkpointEvery=${checkpointEvery} diagnosticsEvery=${diagnosticsEvery} diagnostics=${diagnosticsFile ?? "off"} workers=${workerCount} learningRate=${learningRate} restart=${restart ? restartFrom : "off"} publicCopy=${publicDir ?? "off"}`,
+    `training openfront policy: episodes=${trainForever ? "until Ctrl+C" : episodes} map=${mapName} opponents=${opponents} opponentAI=${opponentAI} opponentCurriculum=${opponentCurriculumSummary} maxTicks=${maxTicks} episodeEnd=${episodeEnd} curriculum=${curriculumMode} logEvery=${logEvery} checkpointEvery=${checkpointEvery} diagnosticsEvery=${diagnosticsEvery} diagnostics=${diagnosticsFile ?? "off"} workers=${workerCount} learningRate=${learningRateScheduleSummary} restart=${restart ? restartFrom : "off"} publicCopy=${publicDir ?? "off"}`,
   );
   console.log(`simulation map: ${env.mapDescription()}`);
   console.log(
@@ -602,11 +729,16 @@ async function main(): Promise<void> {
         episodeEnd,
         episodes: trainForever ? "until Ctrl+C" : episodes,
         learningRate,
+        learningRateDecayFactor,
+        learningRateDecayStart,
         logEvery,
         map: mapName,
         mapDescription: env.mapDescription(),
         maxTicks,
         opponentAI,
+        opponentCurriculum: opponentCurriculumMode,
+        opponentRampEpisode,
+        opponentStart,
         opponents,
         seed,
         workers: workerCount,
@@ -638,6 +770,9 @@ async function main(): Promise<void> {
 
   const epsilonForEpisode = (episode: number): number =>
     trainForever ? 0.1 : Math.max(0.04, 0.25 * (1 - episode / episodes));
+
+  const learningRateScaleForEpisode = (episode: number): number =>
+    episode >= learningRateDecayStart ? learningRateDecayFactor : 1;
 
   const recordRollout = (rollout: EpisodeRollout): void => {
     const { summary } = rollout;
@@ -709,6 +844,7 @@ async function main(): Promise<void> {
           `alive=${latestEpisodeSummary.alive ? "yes" : "no"}`,
           `loss=${trainStats.loss.toFixed(4)}`,
           `grad=${trainStats.gradNorm.toFixed(2)}`,
+          `lrScale=${trainStats.learningRateScale.toFixed(2)}`,
           `update=${trainStats.skipped ? "skipped" : trainStats.clipped ? "clipped" : "ok"}`,
           `maxParam=${trainStats.maxAbsParameter.toFixed(2)}`,
           `eps=${(intervalEpisodes / intervalSeconds).toFixed(2)}/s`,
@@ -718,6 +854,7 @@ async function main(): Promise<void> {
           `avgTiles=${(windowTiles / windowEpisodes).toFixed(0)}`,
           `bestReward=${windowBestReward.toFixed(2)}`,
           `curriculum=${curriculumPhaseForEpisode(latestEpisode, curriculumMode).name}`,
+          `opponentsNow=${activeOpponentsForEpisode(latestEpisode, opponents, opponentStart, opponentRampEpisode, opponentCurriculumMode)}`,
           actionCounts(transitions),
         ].join(" "),
       );
@@ -767,6 +904,7 @@ async function main(): Promise<void> {
       diagnosticsWindow.actionCounts,
       transitions,
     );
+    const avgReward = diagnosticsWindow.reward / episodes;
     const record = {
       type: "training_diagnostics",
       runId,
@@ -780,7 +918,7 @@ async function main(): Promise<void> {
         elapsedSeconds,
         episodesPerSecond:
           elapsedSeconds <= 0 ? 0 : latestEpisode / elapsedSeconds,
-        avgReward: diagnosticsWindow.reward / episodes,
+        avgReward,
         bestReward: diagnosticsWindow.bestReward,
         worstReward: diagnosticsWindow.worstReward,
         aliveRate: diagnosticsWindow.alive / episodes,
@@ -807,15 +945,60 @@ async function main(): Promise<void> {
       training: {
         clipped: trainStats.clipped,
         gradNorm: trainStats.gradNorm,
+        effectiveLearningRate: learningRate * trainStats.learningRateScale,
+        learningRate,
+        learningRateScale: trainStats.learningRateScale,
         loss: trainStats.loss,
         maxAbsParameter: trainStats.maxAbsParameter,
         skipped: trainStats.skipped,
       },
       curriculum: curriculumPhaseForEpisode(latestEpisode, curriculumMode).name,
+      opponentCurriculum: {
+        activeOpponents: activeOpponentsForEpisode(
+          latestEpisode,
+          opponents,
+          opponentStart,
+          opponentRampEpisode,
+          opponentCurriculumMode,
+        ),
+        mode: opponentCurriculumMode,
+        rampEpisode: opponentRampEpisode,
+        start: opponentStart,
+        target: opponents,
+      },
       hints: diagnosticHints(diagnosticsWindow),
     };
 
     appendJsonLine(diagnosticsFile, record);
+    if (avgReward > bestWindowReward && policy.isStable()) {
+      bestWindowReward = avgReward;
+      bestSavedPath = savePolicySnapshot(
+        outputDir,
+        publicDir,
+        BEST_POLICY_FILE,
+        latestEpisode,
+        {
+          ...(typeof latestSummary === "object" && latestSummary !== null
+            ? latestSummary
+            : { summary: latestSummary }),
+          bestWindowAvgReward: avgReward,
+          diagnosticsEpisode: latestEpisode,
+          saveReason: "best_window",
+        },
+        policy,
+      );
+      appendJsonLine(diagnosticsFile, {
+        type: "best_policy_saved",
+        runId,
+        writtenAt: new Date().toISOString(),
+        episode: latestEpisode,
+        avgReward,
+        path: bestSavedPath,
+      });
+      console.log(
+        `new best diagnostic policy avgReward=${avgReward.toFixed(2)} saved to ${bestSavedPath}`,
+      );
+    }
     diagnosticsWindow = newDiagnosticsWindow();
     lastDiagnosticsEpisode = latestEpisode;
   };
@@ -826,7 +1009,9 @@ async function main(): Promise<void> {
     const samples = rollouts.flatMap((rollout) =>
       discountedSamples(rollout.transitions, 0.96),
     );
-    return policy.train(samples);
+    const batchEpisode =
+      rollouts[rollouts.length - 1]?.episode ?? latestEpisode;
+    return policy.train(samples, learningRateScaleForEpisode(batchEpisode));
   };
 
   const allTransitions = (rollouts: EpisodeRollout[]): Transition[] =>
@@ -920,7 +1105,7 @@ async function main(): Promise<void> {
     console.log(`saved trained policy snapshot to ${lastSavedPath}`);
     if (publicDir !== null) {
       console.log(
-        `copied live-game policy to ${path.join(publicDir, "openfront-policy.json")}`,
+        `copied live-game policy to ${path.join(publicDir, LATEST_POLICY_FILE)}`,
       );
     }
   }
@@ -933,6 +1118,10 @@ async function main(): Promise<void> {
       episode: latestEpisode,
       status: stopRequested ? "interrupted" : "complete",
       summary: latestSummary,
+      bestPolicy: {
+        avgReward: Number.isFinite(bestWindowReward) ? bestWindowReward : null,
+        path: bestSavedPath,
+      },
     });
   }
 }

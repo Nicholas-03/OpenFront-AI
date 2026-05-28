@@ -65,11 +65,12 @@ const ATTACK_ACTIONS = new Set<TrainingAction>([
   "attack_weakest",
   "attack_strongest",
 ]);
-const ALLIANCE_ACTIONS = new Set<TrainingAction>([
-  "accept_alliance",
-  "request_alliance_nearest",
-  "request_alliance_strongest",
-]);
+const ATTACK_OR_EXPAND_ACTIONS = [
+  "expand",
+  "attack_nearest",
+  "attack_weakest",
+  "attack_strongest",
+] as const satisfies readonly TrainingAction[];
 
 interface OpponentRewardStats {
   alive: number;
@@ -101,6 +102,8 @@ export interface TrainingEnvOptions {
   maxTicks: number;
   mapName: string;
   opponentAI: TrainingOpponentAI;
+  opponentRampEpisode?: number;
+  opponentStart?: number;
   opponents: number;
   seed: number;
 }
@@ -249,11 +252,13 @@ export class OpenFrontTrainingEnv {
   private miniMapBin: Uint8Array;
   private manifest: MapManifest;
   private heuristicOpponents: Player[] = [];
+  private currentOpponentCount: number;
   private totalReward = 0;
   private positiveUnitReward = 0;
 
   constructor(private readonly options: TrainingEnvOptions) {
     this.rng = new SeededRandom(options.seed);
+    this.currentOpponentCount = options.opponents;
   }
 
   async init(): Promise<void> {
@@ -283,6 +288,7 @@ export class OpenFrontTrainingEnv {
   async reset(episode: number): Promise<number[]> {
     this.totalReward = 0;
     this.positiveUnitReward = 0;
+    this.currentOpponentCount = this.opponentsForEpisode(episode);
     this.rng = new SeededRandom(this.options.seed + episode * 9973);
 
     const gameMap = await genTerrainFromBin(
@@ -299,7 +305,7 @@ export class OpenFrontTrainingEnv {
       false,
     );
     const gameID = `train-${episode}`;
-    const opponentModes = this.opponentModes();
+    const opponentModes = this.opponentModes(this.currentOpponentCount);
     const learnerInfo = new PlayerInfo(
       "Learner",
       PlayerType.Human,
@@ -403,6 +409,9 @@ export class OpenFrontTrainingEnv {
     const beforeAlliances = this.learner.alliances().length;
     const beforeOpponents = this.opponentRewardStats();
     const beforeBorders = this.borderStats(this.learner);
+    const attackOrExpandAvailable = ATTACK_OR_EXPAND_ACTIONS.some((candidate) =>
+      isNeuralBotActionAvailable(this.game, this.learner, candidate),
+    );
 
     const actionSucceeded = this.applyAction(this.learner, action);
     for (const opponent of this.heuristicOpponents) {
@@ -442,11 +451,15 @@ export class OpenFrontTrainingEnv {
     const winReward = this.learnerWon() ? 24 : 0;
     const attackActionReward =
       actionSucceeded && ATTACK_ACTIONS.has(action) ? 0.2 : 0;
-    const allianceReward =
-      Math.max(0, afterAlliances - beforeAlliances) * 1.5 +
-      (actionSucceeded && ALLIANCE_ACTIONS.has(action) ? 0.12 : 0);
+    const allianceReward = Math.max(0, afterAlliances - beforeAlliances) * 1.5;
     const passiveBorderPenalty =
-      action === "hold" && beforeBorders.enemy > 0 ? -0.08 : 0;
+      action === "hold" && attackOrExpandAvailable
+        ? beforeBorders.enemy > 0
+          ? -0.35
+          : -0.18
+        : action === "hold" && beforeBorders.enemy > 0
+          ? -0.12
+          : 0;
     const defensiveBuildPenalty =
       actionSucceeded &&
       (action === "build_defense_post" || action === "build_sam_launcher")
@@ -491,7 +504,7 @@ export class OpenFrontTrainingEnv {
     return buildNeuralBotInput({
       game: this.game,
       player: this.learner,
-      opponentBaseline: this.options.opponents,
+      opponentBaseline: this.currentOpponentCount,
       tickHorizon: this.options.maxTicks,
     });
   }
@@ -567,8 +580,17 @@ export class OpenFrontTrainingEnv {
     return this.rng.next() < 0.65 ? "attack_weakest" : "attack_strongest";
   }
 
-  private opponentModes(): ResolvedOpponentAI[] {
-    return Array.from({ length: this.options.opponents }, (_, index) => {
+  private opponentsForEpisode(episode: number): number {
+    const rampEpisode = this.options.opponentRampEpisode ?? 0;
+    const start = this.options.opponentStart ?? this.options.opponents;
+    if (episode < rampEpisode) {
+      return Math.max(1, Math.min(this.options.opponents, start));
+    }
+    return this.options.opponents;
+  }
+
+  private opponentModes(opponentCount: number): ResolvedOpponentAI[] {
+    return Array.from({ length: opponentCount }, (_, index) => {
       switch (this.options.opponentAI) {
         case "heuristic":
         case "tribe":
