@@ -18,6 +18,9 @@ export const NEURAL_BOT_ACTIONS = [
   "build_sam_launcher",
   "build_missile_silo",
   "upgrade_structure",
+  "accept_alliance",
+  "request_alliance_nearest",
+  "request_alliance_strongest",
   "hold",
 ] as const;
 

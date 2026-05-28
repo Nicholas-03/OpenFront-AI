@@ -1,3 +1,4 @@
+import { AllianceRequestExecution } from "../execution/alliance/AllianceRequestExecution";
 import { AttackExecution } from "../execution/AttackExecution";
 import { ConstructionExecution } from "../execution/ConstructionExecution";
 import { UpgradeStructureExecution } from "../execution/UpgradeStructureExecution";
@@ -191,6 +192,20 @@ export function tryNeuralBotAction(
       );
     case "upgrade_structure":
       return upgradeStructure(game, player);
+    case "accept_alliance":
+      return requestAlliance(game, player, bestIncomingAllianceRequest(player));
+    case "request_alliance_nearest":
+      return requestAlliance(
+        game,
+        player,
+        nearestAllianceCandidate(game, player),
+      );
+    case "request_alliance_strongest":
+      return requestAlliance(
+        game,
+        player,
+        strongestAllianceCandidate(game, player),
+      );
     case "build_city":
     case "build_factory":
     case "build_port":
@@ -246,6 +261,12 @@ export function isNeuralBotActionAvailable(
       );
     case "upgrade_structure":
       return findUpgradeUnit(player) !== null;
+    case "accept_alliance":
+      return bestIncomingAllianceRequest(player) !== null;
+    case "request_alliance_nearest":
+      return nearestAllianceCandidate(game, player) !== null;
+    case "request_alliance_strongest":
+      return strongestAllianceCandidate(game, player) !== null;
     case "build_city":
     case "build_factory":
     case "build_port":
@@ -259,6 +280,60 @@ export function isNeuralBotActionAvailable(
     case "hold":
       return true;
   }
+}
+
+function allianceCandidates(game: Game, player: Player): Player[] {
+  return game
+    .players()
+    .filter((candidate) => candidate !== player)
+    .filter((candidate) => player.canSendAllianceRequest(candidate));
+}
+
+function bestIncomingAllianceRequest(player: Player): Player | null {
+  const request = player
+    .incomingAllianceRequests()
+    .map((allianceRequest) => allianceRequest.requestor())
+    .find((requestor) => player.canSendAllianceRequest(requestor));
+  return request ?? null;
+}
+
+function nearestAllianceCandidate(game: Game, player: Player): Player | null {
+  const playerCenter = centerTile(game, player);
+  if (playerCenter === null) {
+    return null;
+  }
+
+  let nearest: Player | null = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const candidate of allianceCandidates(game, player)) {
+    const candidateCenter = centerTile(game, candidate);
+    if (candidateCenter === null) {
+      continue;
+    }
+    const distance = game.manhattanDist(playerCenter, candidateCenter);
+    if (distance < nearestDistance) {
+      nearest = candidate;
+      nearestDistance = distance;
+    }
+  }
+  return nearest;
+}
+
+function strongestAllianceCandidate(game: Game, player: Player): Player | null {
+  return byStrength(allianceCandidates(game, player))[0] ?? null;
+}
+
+function requestAlliance(
+  game: Game,
+  player: Player,
+  target: Player | null,
+): boolean {
+  if (target === null || !player.canSendAllianceRequest(target)) {
+    return false;
+  }
+
+  game.addExecution(new AllianceRequestExecution(player, target.id()));
+  return true;
 }
 
 function canAttackPlayer(

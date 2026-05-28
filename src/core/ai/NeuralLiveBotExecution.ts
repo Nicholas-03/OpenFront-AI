@@ -144,15 +144,18 @@ export class NeuralLiveBotExecution implements Execution {
         ] as const);
 
     const fallbacks: readonly NeuralBotAction[] = [
+      "accept_alliance",
       "expand",
       "build_city",
       "build_factory",
+      "request_alliance_nearest",
       "build_defense_post",
       "build_port",
       "build_warship",
       "upgrade_structure",
       "attack_weakest",
       "attack_nearest",
+      "request_alliance_strongest",
       "attack_strongest",
       "hold",
     ];

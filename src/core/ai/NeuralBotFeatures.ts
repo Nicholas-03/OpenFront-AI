@@ -1,4 +1,11 @@
-import { Game, Player, Structures, Unit, UnitType } from "../game/Game";
+import {
+  Game,
+  Player,
+  Relation,
+  Structures,
+  Unit,
+  UnitType,
+} from "../game/Game";
 import { TileRef } from "../game/GameMap";
 import {
   borderStats,
@@ -6,6 +13,7 @@ import {
   centerTile,
   findBuildTile,
   findUpgradeUnit,
+  isNeuralBotActionAvailable,
   maxPlayerDistance,
   nearestOpponent,
   opponentsOf,
@@ -63,6 +71,28 @@ export const NEURAL_BOT_SCALAR_FEATURE_NAMES = [
   "can_build_sam_launcher",
   "can_build_missile_silo",
   "can_upgrade_structure",
+  "neighboring_players_ratio",
+  "enemy_neighbor_ratio",
+  "allied_neighbor_ratio",
+  "strongest_neighbor_tiles_vs_self",
+  "strongest_neighbor_troops_vs_self",
+  "weakest_neighbor_tiles_vs_self",
+  "weakest_neighbor_troops_vs_self",
+  "nearest_neighbor_closeness",
+  "nearest_neighbor_tiles_vs_self",
+  "nearest_neighbor_troops_vs_self",
+  "nearest_neighbor_gold_vs_self",
+  "nearest_neighbor_relation_score",
+  "nearest_neighbor_city_pressure",
+  "nearest_neighbor_factory_pressure",
+  "nearest_neighbor_defense_pressure",
+  "alliance_count_ratio",
+  "incoming_alliance_request_ratio",
+  "outgoing_alliance_request_ratio",
+  "best_alliance_candidate_closeness",
+  "can_accept_alliance",
+  "can_request_nearest_alliance",
+  "can_request_strongest_alliance",
 ] as const;
 
 export const NEURAL_BOT_FEATURE_NAMES = NEURAL_BOT_SCALAR_FEATURE_NAMES;
@@ -169,6 +199,78 @@ function maxOpponentUnitCount(opponents: Player[], type: UnitType): number {
   return Math.max(0, ...opponents.map((opponent) => opponent.unitCount(type)));
 }
 
+function neighborPlayers(player: Player): Player[] {
+  return player
+    .nearby()
+    .filter(
+      (neighbor): neighbor is Player =>
+        neighbor.isPlayer() && neighbor.isAlive() && neighbor !== player,
+    );
+}
+
+function nearestPlayerFrom(
+  game: Game,
+  player: Player,
+  candidates: Player[],
+): Player | null {
+  const playerCenter = centerTile(game, player);
+  if (playerCenter === null) {
+    return null;
+  }
+
+  let nearest: Player | null = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const candidate of candidates) {
+    const candidateCenter = centerTile(game, candidate);
+    if (candidateCenter === null) {
+      continue;
+    }
+    const distance = game.manhattanDist(playerCenter, candidateCenter);
+    if (distance < nearestDistance) {
+      nearest = candidate;
+      nearestDistance = distance;
+    }
+  }
+  return nearest;
+}
+
+function relationScore(player: Player, other: Player | null): number {
+  if (other === null) {
+    return 0;
+  }
+  if (player.isFriendly(other)) {
+    return 1;
+  }
+
+  switch (player.relation(other)) {
+    case Relation.Hostile:
+      return 0;
+    case Relation.Distrustful:
+      return 0.25;
+    case Relation.Neutral:
+      return 0.5;
+    case Relation.Friendly:
+      return 0.75;
+  }
+}
+
+function bestAllianceCandidateCloseness(game: Game, player: Player): number {
+  const nearestCandidate = nearestPlayerFrom(
+    game,
+    player,
+    game
+      .players()
+      .filter((candidate) => player.canSendAllianceRequest(candidate)),
+  );
+  return nearestCandidate
+    ? clamp01(
+        1 -
+          playerDistance(game, player, nearestCandidate) /
+            maxPlayerDistance(game),
+      )
+    : 0;
+}
+
 function averageWarshipHealth(game: Game, warships: Unit[]): number {
   if (warships.length === 0) {
     return 0;
@@ -208,10 +310,23 @@ export function buildNeuralBotFeatures({
   const borders = borderStats(game, player);
   const selfTiles = Math.max(1, player.numTilesOwned());
   const selfTroops = Math.max(1, player.troops());
+  const selfGold = Math.max(1, Number(player.gold()));
   const rank = rankPlayer(game, player);
   const structures = player.units(...Structures.types);
   const ownStructureCount = Math.max(1, structureCount(player));
   const ownWarships = player.units(UnitType.Warship);
+  const neighbors = neighborPlayers(player);
+  const neighborsByStrength = byStrength(neighbors);
+  const enemyNeighbors = neighbors.filter(
+    (neighbor) => !player.isFriendly(neighbor),
+  );
+  const alliedNeighbors = neighbors.filter((neighbor) =>
+    player.isFriendly(neighbor),
+  );
+  const strongestNeighbor = neighborsByStrength[0] ?? null;
+  const weakestNeighbor =
+    neighborsByStrength[neighborsByStrength.length - 1] ?? null;
+  const nearestNeighbor = nearestPlayerFrom(game, player, neighbors);
   const incomingTroops = player
     .incomingAttacks()
     .reduce((acc, attack) => acc + attack.troops(), 0);
@@ -294,6 +409,54 @@ export function buildNeuralBotFeatures({
     canBuildSamLauncher ? 1 : 0,
     canBuildMissileSilo ? 1 : 0,
     upgradableStructure ? 1 : 0,
+    neighbors.length / Math.max(1, opponentBaseline),
+    enemyNeighbors.length / Math.max(1, neighbors.length),
+    alliedNeighbors.length / Math.max(1, neighbors.length),
+    strongestNeighbor
+      ? normRatio(strongestNeighbor.numTilesOwned() / selfTiles)
+      : 0,
+    strongestNeighbor ? normRatio(strongestNeighbor.troops() / selfTroops) : 0,
+    weakestNeighbor
+      ? normRatio(weakestNeighbor.numTilesOwned() / selfTiles)
+      : 0,
+    weakestNeighbor ? normRatio(weakestNeighbor.troops() / selfTroops) : 0,
+    nearestNeighbor
+      ? clamp01(
+          1 -
+            playerDistance(game, player, nearestNeighbor) /
+              maxPlayerDistance(game),
+        )
+      : 0,
+    nearestNeighbor
+      ? normRatio(nearestNeighbor.numTilesOwned() / selfTiles)
+      : 0,
+    nearestNeighbor ? normRatio(nearestNeighbor.troops() / selfTroops) : 0,
+    nearestNeighbor ? normRatio(Number(nearestNeighbor.gold()) / selfGold) : 0,
+    relationScore(player, nearestNeighbor),
+    nearestNeighbor
+      ? normRatio(nearestNeighbor.unitCount(UnitType.City) / ownStructureCount)
+      : 0,
+    nearestNeighbor
+      ? normRatio(
+          nearestNeighbor.unitCount(UnitType.Factory) / ownStructureCount,
+        )
+      : 0,
+    nearestNeighbor
+      ? normRatio(
+          nearestNeighbor.unitCount(UnitType.DefensePost) / ownStructureCount,
+        )
+      : 0,
+    player.alliances().length / Math.max(1, opponentBaseline),
+    player.incomingAllianceRequests().length / Math.max(1, opponentBaseline),
+    player.outgoingAllianceRequests().length / Math.max(1, opponentBaseline),
+    bestAllianceCandidateCloseness(game, player),
+    isNeuralBotActionAvailable(game, player, "accept_alliance") ? 1 : 0,
+    isNeuralBotActionAvailable(game, player, "request_alliance_nearest")
+      ? 1
+      : 0,
+    isNeuralBotActionAvailable(game, player, "request_alliance_strongest")
+      ? 1
+      : 0,
   ];
 
   if (features.length !== NEURAL_BOT_SCALAR_INPUT_SIZE) {

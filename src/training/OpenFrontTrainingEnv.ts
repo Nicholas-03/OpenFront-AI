@@ -65,6 +65,11 @@ const ATTACK_ACTIONS = new Set<TrainingAction>([
   "attack_weakest",
   "attack_strongest",
 ]);
+const ALLIANCE_ACTIONS = new Set<TrainingAction>([
+  "accept_alliance",
+  "request_alliance_nearest",
+  "request_alliance_strongest",
+]);
 
 interface OpponentRewardStats {
   alive: number;
@@ -371,6 +376,7 @@ export class OpenFrontTrainingEnv {
     const beforeGold = Number(this.learner.gold());
     const beforeRank = this.rank(this.learner);
     const beforeTrainingUnits = trainingUnitScore(this.learner);
+    const beforeAlliances = this.learner.alliances().length;
     const beforeOpponents = this.opponentRewardStats();
     const beforeBorders = this.borderStats(this.learner);
 
@@ -390,6 +396,7 @@ export class OpenFrontTrainingEnv {
     const afterGold = Number(this.learner.gold());
     const afterRank = this.rank(this.learner);
     const afterTrainingUnits = trainingUnitScore(this.learner);
+    const afterAlliances = this.learner.alliances().length;
     const afterOpponents = this.opponentRewardStats();
     const tileReward = (afterTiles - beforeTiles) / 25;
     const enemyTileReward =
@@ -411,6 +418,9 @@ export class OpenFrontTrainingEnv {
     const winReward = this.learnerWon() ? 24 : 0;
     const attackActionReward =
       actionSucceeded && ATTACK_ACTIONS.has(action) ? 0.2 : 0;
+    const allianceReward =
+      Math.max(0, afterAlliances - beforeAlliances) * 1.5 +
+      (actionSucceeded && ALLIANCE_ACTIONS.has(action) ? 0.12 : 0);
     const passiveBorderPenalty =
       action === "hold" && beforeBorders.enemy > 0 ? -0.08 : 0;
     const defensiveBuildPenalty =
@@ -431,6 +441,7 @@ export class OpenFrontTrainingEnv {
       eliminationReward +
       winReward +
       attackActionReward +
+      allianceReward +
       passiveBorderPenalty +
       defensiveBuildPenalty +
       aliveReward +
