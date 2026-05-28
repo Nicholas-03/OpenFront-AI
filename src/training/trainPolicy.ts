@@ -4,6 +4,8 @@ import path from "node:path";
 import {
   NEURAL_BOT_GLOBAL_MAP_SIZE,
   NEURAL_BOT_LOCAL_MAP_SIZE,
+  NEURAL_BOT_LOCAL_VIEW_COUNT,
+  NEURAL_BOT_LOCAL_VIEW_NAMES,
   NEURAL_BOT_LONG_GAME_TICK_HORIZON,
   NEURAL_BOT_MAP_CHANNEL_COUNT,
   NEURAL_BOT_SCALAR_INPUT_SIZE,
@@ -712,8 +714,9 @@ async function main(): Promise<void> {
     `network: ${[env.inputSize, ...NEURAL_BOT_HIDDEN_LAYERS, TRAINING_ACTIONS.length].join(" -> ")} (${policy.parameterCount()} parameters)`,
   );
   console.log(
-    `spatial input: global=${NEURAL_BOT_GLOBAL_MAP_SIZE}x${NEURAL_BOT_GLOBAL_MAP_SIZE} local=${NEURAL_BOT_LOCAL_MAP_SIZE}x${NEURAL_BOT_LOCAL_MAP_SIZE} channels=${NEURAL_BOT_MAP_CHANNEL_COUNT} pooled=${NEURAL_BOT_SPATIAL_POOL_SIZE}x${NEURAL_BOT_SPATIAL_POOL_SIZE} scalars=${NEURAL_BOT_SCALAR_INPUT_SIZE}`,
+    `spatial input: global=${NEURAL_BOT_GLOBAL_MAP_SIZE}x${NEURAL_BOT_GLOBAL_MAP_SIZE} localViews=${NEURAL_BOT_LOCAL_VIEW_COUNT}x${NEURAL_BOT_LOCAL_MAP_SIZE}x${NEURAL_BOT_LOCAL_MAP_SIZE} channels=${NEURAL_BOT_MAP_CHANNEL_COUNT} pooled=${NEURAL_BOT_SPATIAL_POOL_SIZE}x${NEURAL_BOT_SPATIAL_POOL_SIZE} scalars=${NEURAL_BOT_SCALAR_INPUT_SIZE}`,
   );
+  console.log(`local views: ${NEURAL_BOT_LOCAL_VIEW_NAMES.join(", ")}`);
   console.log(`actions: ${TRAINING_ACTIONS.join(", ")}`);
 
   if (diagnosticsFile !== null) {
@@ -747,9 +750,11 @@ async function main(): Promise<void> {
         actions: TRAINING_ACTIONS,
         hiddenLayers: NEURAL_BOT_HIDDEN_LAYERS,
         inputSize: env.inputSize,
+        localViewCount: NEURAL_BOT_LOCAL_VIEW_COUNT,
         outputSize: TRAINING_ACTIONS.length,
         parameterCount: policy.parameterCount(),
         scalarInputs: NEURAL_BOT_SCALAR_INPUT_SIZE,
+        localViewNames: NEURAL_BOT_LOCAL_VIEW_NAMES,
       },
     });
   }

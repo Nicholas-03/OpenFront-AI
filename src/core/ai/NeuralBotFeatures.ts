@@ -104,6 +104,13 @@ export const NEURAL_BOT_LOCAL_MAP_SIZE = 32;
 export const NEURAL_BOT_SPATIAL_POOL_SIZE = 16;
 export const NEURAL_BOT_LOCAL_VIEW_RADIUS_TILES = 48;
 export const NEURAL_BOT_LONG_GAME_TICK_HORIZON = 6_000;
+export const NEURAL_BOT_LOCAL_VIEW_NAMES = [
+  "enemy_front",
+  "neutral_front",
+  "weakest_enemy_front",
+  "strongest_threat_front",
+] as const;
+export const NEURAL_BOT_LOCAL_VIEW_COUNT = NEURAL_BOT_LOCAL_VIEW_NAMES.length;
 
 export const NEURAL_BOT_MAP_CHANNEL_NAMES = [
   "terrain_land",
@@ -135,7 +142,8 @@ export const NEURAL_BOT_POOLED_SPATIAL_VALUES =
   NEURAL_BOT_SPATIAL_POOL_SIZE *
   NEURAL_BOT_MAP_CHANNEL_COUNT;
 export const NEURAL_BOT_INPUT_SIZE =
-  NEURAL_BOT_SCALAR_INPUT_SIZE + NEURAL_BOT_POOLED_SPATIAL_VALUES * 2;
+  NEURAL_BOT_SCALAR_INPUT_SIZE +
+  NEURAL_BOT_POOLED_SPATIAL_VALUES * (1 + NEURAL_BOT_LOCAL_VIEW_COUNT);
 
 export interface NeuralBotFeatureContext {
   game: Game;
@@ -149,6 +157,8 @@ export interface NeuralBotSpatialState {
   globalMap: number[];
   localMap: number[];
   localCenter: TileRef | null;
+  localMaps: number[][];
+  localCenters: Array<TileRef | null>;
   input: number[];
 }
 
@@ -479,18 +489,20 @@ export function buildNeuralBotSpatialState(
 ): NeuralBotSpatialState {
   const scalarFeatures = buildNeuralBotFeatures(context);
   const lookup = buildSpatialLookup(context.game, context.player);
-  const localCenter = findLocalBorderCenter(context.game, context.player);
+  const localCenters = findLocalViewCenters(context.game, context.player);
   const globalMap = buildGlobalMapView(context.game, context.player, lookup);
-  const localMap = buildLocalMapView(
-    context.game,
-    context.player,
-    lookup,
-    localCenter,
+  const localMaps = localCenters.map((localCenter) =>
+    buildLocalMapView(context.game, context.player, lookup, localCenter),
   );
+  const localCenter = localCenters[0] ?? null;
+  const localMap =
+    localMaps[0] ?? new Array(NEURAL_BOT_LOCAL_MAP_VALUES).fill(0);
   const input = [
     ...scalarFeatures,
     ...poolSpatialView(globalMap, NEURAL_BOT_GLOBAL_MAP_SIZE),
-    ...poolSpatialView(localMap, NEURAL_BOT_LOCAL_MAP_SIZE),
+    ...localMaps.flatMap((view) =>
+      poolSpatialView(view, NEURAL_BOT_LOCAL_MAP_SIZE),
+    ),
   ];
 
   if (input.length !== NEURAL_BOT_INPUT_SIZE) {
@@ -504,6 +516,8 @@ export function buildNeuralBotSpatialState(
     globalMap,
     localMap,
     localCenter,
+    localMaps,
+    localCenters,
     input,
   };
 }
@@ -685,12 +699,27 @@ function poolSpatialView(view: number[], sourceSize: number): number[] {
   return pooled;
 }
 
-function findLocalBorderCenter(game: Game, player: Player): TileRef | null {
+function enemyPlayers(game: Game, player: Player): Player[] {
+  return game
+    .players()
+    .filter(
+      (candidate) =>
+        candidate !== player &&
+        candidate.isAlive() &&
+        !player.isFriendly(candidate),
+    );
+}
+
+function findLocalViewCenters(
+  game: Game,
+  player: Player,
+): Array<TileRef | null> {
   const enemyBorderTiles: TileRef[] = [];
   const neutralBorderTiles: TileRef[] = [];
+  const enemyBorderTilesByPlayer = new Map<Player, TileRef[]>();
 
   for (const tile of player.borderTiles()) {
-    let touchesEnemy = false;
+    const touchingEnemies = new Set<Player>();
     let touchesNeutral = false;
     game.forEachNeighbor(tile, (neighbor) => {
       if (!game.isLand(neighbor)) {
@@ -701,22 +730,75 @@ function findLocalBorderCenter(game: Game, player: Player): TileRef | null {
         return;
       }
       if (owner.isPlayer() && !player.isFriendly(owner)) {
-        touchesEnemy = true;
+        touchingEnemies.add(owner);
       } else if (!owner.isPlayer()) {
         touchesNeutral = true;
       }
     });
 
-    if (touchesEnemy) {
+    if (touchingEnemies.size > 0) {
       enemyBorderTiles.push(tile);
+      for (const enemy of touchingEnemies) {
+        const tiles = enemyBorderTilesByPlayer.get(enemy) ?? [];
+        tiles.push(tile);
+        enemyBorderTilesByPlayer.set(enemy, tiles);
+      }
     } else if (touchesNeutral) {
       neutralBorderTiles.push(tile);
     }
   }
 
+  const enemies = byStrength(enemyPlayers(game, player));
+  const borderingEnemies = enemies.filter((enemy) =>
+    player.sharesBorderWith(enemy),
+  );
+  const strongestThreat = borderingEnemies[0] ?? enemies[0] ?? null;
+  const weakestEnemy =
+    borderingEnemies[borderingEnemies.length - 1] ??
+    enemies[enemies.length - 1] ??
+    null;
+  const enemyFrontCenter = tileNearestCentroid(game, enemyBorderTiles);
+  const neutralFrontCenter = tileNearestCentroid(game, neutralBorderTiles);
+  const fallbackCenter =
+    enemyFrontCenter ?? neutralFrontCenter ?? centerTile(game, player);
+
+  return [
+    enemyFrontCenter ??
+      centerForPlayerFront(game, player, strongestThreat) ??
+      fallbackCenter,
+    neutralFrontCenter ?? enemyFrontCenter ?? fallbackCenter,
+    centerForPlayerFront(
+      game,
+      player,
+      weakestEnemy,
+      enemyBorderTilesByPlayer,
+    ) ??
+      enemyFrontCenter ??
+      fallbackCenter,
+    centerForPlayerFront(
+      game,
+      player,
+      strongestThreat,
+      enemyBorderTilesByPlayer,
+    ) ??
+      enemyFrontCenter ??
+      fallbackCenter,
+  ];
+}
+
+function centerForPlayerFront(
+  game: Game,
+  player: Player,
+  target: Player | null,
+  borderTilesByPlayer = new Map<Player, TileRef[]>(),
+): TileRef | null {
+  if (target === null) {
+    return null;
+  }
+
   return (
-    tileNearestCentroid(game, enemyBorderTiles) ??
-    tileNearestCentroid(game, neutralBorderTiles) ??
+    tileNearestCentroid(game, borderTilesByPlayer.get(target) ?? []) ??
+    centerTile(game, target) ??
     centerTile(game, player)
   );
 }
