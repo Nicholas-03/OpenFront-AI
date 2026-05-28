@@ -12,7 +12,7 @@ import { ParallelRolloutPool } from "./ParallelRolloutPool";
 import { EpisodeRollout, runPolicyEpisode, Transition } from "./Rollout";
 import { SeededRandom } from "./TrainingRandom";
 
-const LEARNING_RATE = 0.003;
+const DEFAULT_LEARNING_RATE = 0.001;
 
 interface SavedTrainingSnapshot {
   actions?: unknown;
@@ -111,6 +111,7 @@ function trainingActionsMatch(actions: unknown): boolean {
 function loadRestartPolicy(
   restartPath: string,
   inputSize: number,
+  learningRate: number,
   random: SeededRandom,
 ): {
   policy: NeuralPolicy;
@@ -149,7 +150,7 @@ function loadRestartPolicy(
         inputSize,
         hiddenLayers: NEURAL_BOT_HIDDEN_LAYERS,
         outputSize: TRAINING_ACTIONS.length,
-        learningRate: LEARNING_RATE,
+        learningRate,
       },
       () => random.next(),
     );
@@ -188,6 +189,11 @@ function savePolicySnapshot(
   summary: unknown,
   policy: NeuralPolicy,
 ): string {
+  if (!policy.isStable()) {
+    console.warn("policy is unstable; refusing to save this checkpoint");
+    return path.join(outputDir, "openfront-policy.json");
+  }
+
   const snapshot = JSON.stringify(
     {
       actions: TRAINING_ACTIONS,
@@ -226,6 +232,7 @@ async function main(): Promise<void> {
   const logEvery = positiveIntegerArg("--logEvery", 1000);
   const checkpointEvery = positiveIntegerArg("--checkpointEvery", 1000);
   const workerCount = positiveIntegerArg("--workers", 1);
+  const learningRate = numberArg("--learningRate", DEFAULT_LEARNING_RATE);
   const restart = hasFlag("--restart");
   const restartFrom = stringArg(
     "--restartFrom",
@@ -247,7 +254,7 @@ async function main(): Promise<void> {
     env.inputSize,
     [...NEURAL_BOT_HIDDEN_LAYERS],
     TRAINING_ACTIONS.length,
-    LEARNING_RATE,
+    learningRate,
     () => random.next(),
   );
 
@@ -260,7 +267,12 @@ async function main(): Promise<void> {
   };
 
   if (restart) {
-    const restarted = loadRestartPolicy(restartFrom, env.inputSize, random);
+    const restarted = loadRestartPolicy(
+      restartFrom,
+      env.inputSize,
+      learningRate,
+      random,
+    );
     if (restarted !== null) {
       policy = restarted.policy;
       latestEpisode = restarted.episode;
@@ -302,7 +314,7 @@ async function main(): Promise<void> {
   });
 
   console.log(
-    `training openfront policy: episodes=${trainForever ? "until Ctrl+C" : episodes} map=${mapName} opponents=${opponents} maxTicks=${maxTicks} logEvery=${logEvery} checkpointEvery=${checkpointEvery} workers=${workerCount} restart=${restart ? restartFrom : "off"} publicCopy=${publicDir ?? "off"}`,
+    `training openfront policy: episodes=${trainForever ? "until Ctrl+C" : episodes} map=${mapName} opponents=${opponents} maxTicks=${maxTicks} logEvery=${logEvery} checkpointEvery=${checkpointEvery} workers=${workerCount} learningRate=${learningRate} restart=${restart ? restartFrom : "off"} publicCopy=${publicDir ?? "off"}`,
   );
   console.log(
     `network: ${[env.inputSize, ...NEURAL_BOT_HIDDEN_LAYERS, TRAINING_ACTIONS.length].join(" -> ")} (${policy.parameterCount()} parameters)`,
@@ -361,6 +373,8 @@ async function main(): Promise<void> {
           `alive=${latestEpisodeSummary.alive ? "yes" : "no"}`,
           `loss=${trainStats.loss.toFixed(4)}`,
           `grad=${trainStats.gradNorm.toFixed(2)}`,
+          `update=${trainStats.skipped ? "skipped" : trainStats.clipped ? "clipped" : "ok"}`,
+          `maxParam=${trainStats.maxAbsParameter.toFixed(2)}`,
           `eps=${(intervalEpisodes / intervalSeconds).toFixed(2)}/s`,
           `elapsed=${formatSeconds(elapsedSeconds)}`,
           `avgReward=${(windowReward / windowEpisodes).toFixed(2)}`,

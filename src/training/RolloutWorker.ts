@@ -70,7 +70,7 @@ async function handleRollout(message: RolloutRequest): Promise<void> {
         inputSize: rolloutEnv.inputSize,
         hiddenLayers: NEURAL_BOT_HIDDEN_LAYERS,
         outputSize: TRAINING_ACTIONS.length,
-        learningRate: message.policy.learningRate ?? 0.003,
+        learningRate: message.policy.learningRate ?? 0.001,
       },
       () => 0.5,
     );

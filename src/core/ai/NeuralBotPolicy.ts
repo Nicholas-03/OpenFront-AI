@@ -21,6 +21,8 @@ export const NEURAL_BOT_ACTIONS = [
 
 export type NeuralBotAction = (typeof NEURAL_BOT_ACTIONS)[number];
 
+const MAX_NEURAL_POLICY_PARAMETER = 1_000;
+
 export interface NeuralPolicyWeights {
   inputSize: number;
   hiddenLayers?: number[];
@@ -72,7 +74,16 @@ function hasShape(matrix: number[][], rows: number, columns: number): boolean {
   return (
     Array.isArray(matrix) &&
     matrix.length === rows &&
-    matrix.every((row) => Array.isArray(row) && row.length === columns)
+    matrix.every(
+      (row) =>
+        Array.isArray(row) &&
+        row.length === columns &&
+        row.every(
+          (value) =>
+            Number.isFinite(value) &&
+            Math.abs(value) <= MAX_NEURAL_POLICY_PARAMETER,
+        ),
+    )
   );
 }
 
@@ -138,7 +149,12 @@ function isValidPolicyShape(weights: NormalizedNeuralPolicyWeights): boolean {
     const columns = layerSizes[layer];
     if (
       !hasShape(weights.weights[layer], rows, columns) ||
-      weights.biases[layer].length !== rows
+      weights.biases[layer].length !== rows ||
+      weights.biases[layer].some(
+        (value) =>
+          !Number.isFinite(value) ||
+          Math.abs(value) > MAX_NEURAL_POLICY_PARAMETER,
+      )
     ) {
       return false;
     }

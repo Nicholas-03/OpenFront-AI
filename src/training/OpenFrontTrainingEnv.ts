@@ -146,6 +146,25 @@ function createTrainingConfig(): GameConfig {
   };
 }
 
+function suppressExpectedTrainingWarnings(callback: () => void): void {
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    if (
+      typeof args[0] === "string" &&
+      (args[0].startsWith("cannot build") ||
+        args[0].startsWith("cannot build construction"))
+    ) {
+      return;
+    }
+    originalWarn(...args);
+  };
+  try {
+    callback();
+  } finally {
+    console.warn = originalWarn;
+  }
+}
+
 export class OpenFrontTrainingEnv {
   readonly inputSize = NEURAL_BOT_INPUT_SIZE;
 
@@ -249,14 +268,19 @@ export class OpenFrontTrainingEnv {
     const beforeRank = this.rank(this.learner);
     const beforeStrategicUnits = strategicUnitScore(this.learner);
 
-    this.applyAction(this.learner, TRAINING_ACTIONS[actionIndex]);
+    const actionSucceeded = this.applyAction(
+      this.learner,
+      TRAINING_ACTIONS[actionIndex],
+    );
     for (const opponent of this.opponents()) {
       this.applyAction(opponent, this.heuristicAction(opponent));
     }
 
-    for (let i = 0; i < this.options.decisionInterval; i++) {
-      this.game.executeNextTick();
-    }
+    suppressExpectedTrainingWarnings(() => {
+      for (let i = 0; i < this.options.decisionInterval; i++) {
+        this.game.executeNextTick();
+      }
+    });
 
     const afterTiles = this.learner.numTilesOwned();
     const afterTroops = this.learner.troops();
@@ -267,8 +291,14 @@ export class OpenFrontTrainingEnv {
     const rankReward = (beforeRank - afterRank) * 0.5;
     const unitReward = (afterStrategicUnits - beforeStrategicUnits) * 0.25;
     const aliveReward = this.learner.isAlive() ? 0.03 : -4;
+    const invalidActionPenalty = actionSucceeded ? 0 : -0.08;
     const reward =
-      tileReward + troopReward + rankReward + unitReward + aliveReward;
+      tileReward +
+      troopReward +
+      rankReward +
+      unitReward +
+      aliveReward +
+      invalidActionPenalty;
 
     this.totalReward += reward;
 
@@ -297,8 +327,8 @@ export class OpenFrontTrainingEnv {
     };
   }
 
-  private applyAction(player: Player, action: TrainingAction): void {
-    tryNeuralBotAction(this.game, player, action);
+  private applyAction(player: Player, action: TrainingAction): boolean {
+    return tryNeuralBotAction(this.game, player, action);
   }
 
   private heuristicAction(player: Player): TrainingAction {

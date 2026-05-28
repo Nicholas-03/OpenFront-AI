@@ -18,6 +18,9 @@ export interface PolicyGradientSample {
 export interface TrainStats {
   loss: number;
   gradNorm: number;
+  clipped: boolean;
+  maxAbsParameter: number;
+  skipped: boolean;
 }
 
 export interface SerializedNeuralPolicy {
@@ -40,18 +43,32 @@ export interface NeuralPolicyArchitecture {
   hiddenLayers: number | readonly number[];
   outputSize: number;
   learningRate: number;
+  maxGradNorm?: number;
 }
 
 type RandomFn = () => number;
+
+const DEFAULT_MAX_GRAD_NORM = 20;
+const MAX_ABS_PARAMETER = 20;
+const MAX_LOAD_ABS_PARAMETER = 1_000;
 
 function zeros(rows: number, columns: number): number[][] {
   return Array.from({ length: rows }, () => new Array(columns).fill(0));
 }
 
 function softmax(logits: number[]): number[] {
+  if (logits.length === 0 || logits.some((value) => !Number.isFinite(value))) {
+    return new Array(Math.max(1, logits.length)).fill(
+      1 / Math.max(1, logits.length),
+    );
+  }
+
   const max = Math.max(...logits);
   const exps = logits.map((value) => Math.exp(value - max));
   const sum = exps.reduce((acc, value) => acc + value, 0);
+  if (!Number.isFinite(sum) || sum <= 0) {
+    return new Array(logits.length).fill(1 / logits.length);
+  }
   return exps.map((value) => value / sum);
 }
 
@@ -77,7 +94,10 @@ function hasNumericVector(value: unknown, length: number): value is number[] {
   return (
     Array.isArray(value) &&
     value.length === length &&
-    value.every((entry) => Number.isFinite(entry))
+    value.every(
+      (entry) =>
+        Number.isFinite(entry) && Math.abs(entry) <= MAX_LOAD_ABS_PARAMETER,
+    )
   );
 }
 
@@ -169,6 +189,14 @@ function hasExpectedShape(
   return true;
 }
 
+function clampParameter(value: number): number {
+  return Math.max(-MAX_ABS_PARAMETER, Math.min(MAX_ABS_PARAMETER, value));
+}
+
+function isFiniteVector(value: readonly number[]): boolean {
+  return value.every((entry) => Number.isFinite(entry));
+}
+
 export class NeuralPolicy {
   public readonly hiddenLayers: number[];
   public readonly hiddenSize: number;
@@ -183,6 +211,7 @@ export class NeuralPolicy {
     public readonly outputSize: number,
     private readonly learningRate: number,
     random: RandomFn,
+    private readonly maxGradNorm = DEFAULT_MAX_GRAD_NORM,
   ) {
     this.hiddenLayers = Array.isArray(hiddenLayers)
       ? [...hiddenLayers]
@@ -237,6 +266,7 @@ export class NeuralPolicy {
       architecture.outputSize,
       architecture.learningRate,
       random,
+      architecture.maxGradNorm,
     );
     policy.weights = normalized.weights.map((layer) =>
       layer.map((row) => [...row]),
@@ -256,11 +286,36 @@ export class NeuralPolicy {
     return count;
   }
 
+  maxAbsParameter(): number {
+    let max = 0;
+    for (let layer = 0; layer < this.weights.length; layer++) {
+      for (const value of this.biases[layer]) {
+        max = Math.max(max, Math.abs(value));
+      }
+      for (const row of this.weights[layer]) {
+        for (const value of row) {
+          max = Math.max(max, Math.abs(value));
+        }
+      }
+    }
+    return max;
+  }
+
+  isStable(): boolean {
+    return (
+      Number.isFinite(this.maxAbsParameter()) &&
+      this.maxAbsParameter() <= MAX_LOAD_ABS_PARAMETER
+    );
+  }
+
   forward(input: number[]): ForwardPass {
     if (input.length !== this.inputSize) {
       throw new Error(
         `Expected ${this.inputSize} inputs, received ${input.length}`,
       );
+    }
+    if (!isFiniteVector(input)) {
+      throw new Error("Neural policy received non-finite input features");
     }
 
     const hiddenActivations: number[][] = [];
@@ -293,8 +348,19 @@ export class NeuralPolicy {
   }
 
   train(samples: PolicyGradientSample[]): TrainStats {
+    const skippedStats = (): TrainStats => ({
+      loss: 0,
+      gradNorm: 0,
+      clipped: false,
+      maxAbsParameter: this.maxAbsParameter(),
+      skipped: true,
+    });
+
     if (samples.length === 0) {
-      return { loss: 0, gradNorm: 0 };
+      return skippedStats();
+    }
+    if (!this.isStable()) {
+      return skippedStats();
     }
 
     const gradWeights = this.weights.map((layer) =>
@@ -306,15 +372,31 @@ export class NeuralPolicy {
     let loss = 0;
 
     for (const sample of samples) {
+      if (
+        sample.action < 0 ||
+        sample.action >= this.outputSize ||
+        !Number.isFinite(sample.advantage) ||
+        !isFiniteVector(sample.input) ||
+        !isFiniteVector(sample.probs)
+      ) {
+        return skippedStats();
+      }
+
       const clippedAdvantage = Math.max(-3, Math.min(3, sample.advantage));
+      const actionProb = sample.probs[sample.action];
+      if (!Number.isFinite(actionProb)) {
+        return skippedStats();
+      }
       loss +=
-        -Math.log(Math.max(sample.probs[sample.action], 1e-9)) *
-        clippedAdvantage;
+        -Math.log(Math.max(Math.min(actionProb, 1), 1e-9)) * clippedAdvantage;
 
       const activations = [
         sample.input,
         ...(sample.activations ?? (sample.hidden ? [sample.hidden] : [])),
       ];
+      if (activations.some((activation) => !isFiniteVector(activation))) {
+        return skippedStats();
+      }
       if (activations.length !== this.weights.length) {
         throw new Error(
           `Expected ${this.weights.length - 1} hidden activation layers, received ${activations.length - 1}`,
@@ -356,14 +438,11 @@ export class NeuralPolicy {
       }
     }
 
-    const scale = this.learningRate / samples.length;
     let gradNormSquared = 0;
-
     for (let layer = 0; layer < this.weights.length; layer++) {
       for (let output = 0; output < this.weights[layer].length; output++) {
         gradNormSquared +=
           gradBiases[layer][output] * gradBiases[layer][output];
-        this.biases[layer][output] -= gradBiases[layer][output] * scale;
         for (
           let input = 0;
           input < this.weights[layer][output].length;
@@ -372,15 +451,50 @@ export class NeuralPolicy {
           gradNormSquared +=
             gradWeights[layer][output][input] *
             gradWeights[layer][output][input];
-          this.weights[layer][output][input] -=
+        }
+      }
+    }
+
+    const gradNorm = Math.sqrt(gradNormSquared);
+    const averageLoss = loss / samples.length;
+    if (!Number.isFinite(gradNorm) || !Number.isFinite(averageLoss)) {
+      return skippedStats();
+    }
+
+    const clipScale =
+      gradNorm > this.maxGradNorm && gradNorm > 0
+        ? this.maxGradNorm / gradNorm
+        : 1;
+    const scale = (this.learningRate / samples.length) * clipScale;
+
+    for (let layer = 0; layer < this.weights.length; layer++) {
+      for (let output = 0; output < this.weights[layer].length; output++) {
+        const nextBias =
+          this.biases[layer][output] - gradBiases[layer][output] * scale;
+        this.biases[layer][output] = Number.isFinite(nextBias)
+          ? clampParameter(nextBias)
+          : this.biases[layer][output];
+        for (
+          let input = 0;
+          input < this.weights[layer][output].length;
+          input++
+        ) {
+          const nextWeight =
+            this.weights[layer][output][input] -
             gradWeights[layer][output][input] * scale;
+          this.weights[layer][output][input] = Number.isFinite(nextWeight)
+            ? clampParameter(nextWeight)
+            : this.weights[layer][output][input];
         }
       }
     }
 
     return {
-      loss: loss / samples.length,
-      gradNorm: Math.sqrt(gradNormSquared),
+      loss: averageLoss,
+      gradNorm,
+      clipped: clipScale < 1,
+      maxAbsParameter: this.maxAbsParameter(),
+      skipped: false,
     };
   }
 
