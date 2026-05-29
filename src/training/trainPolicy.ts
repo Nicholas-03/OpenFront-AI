@@ -262,11 +262,13 @@ function zeroRewardBreakdown(): Record<RewardBreakdownKey, number> {
     alliance: 0,
     attackAction: 0,
     defensiveBuildPenalty: 0,
+    diplomacyDelayPenalty: 0,
     elimination: 0,
     enemyTile: 0,
     enemyTroop: 0,
     gold: 0,
     invalidActionPenalty: 0,
+    missedAttackPenalty: 0,
     passiveBorderPenalty: 0,
     rank: 0,
     tile: 0,
@@ -325,10 +327,10 @@ function diagnosticHints(window: DiagnosticsWindow): string[] {
     (actionFractions.request_alliance_nearest ?? 0) +
     (actionFractions.request_alliance_strongest ?? 0);
 
-  if (attackFraction < 0.12) {
+  if (attackFraction < 0.25) {
     hints.push("low_attack_rate");
   }
-  if ((actionFractions.hold ?? 0) > 0.35) {
+  if ((actionFractions.hold ?? 0) > 0.3) {
     hints.push("too_many_holds");
   }
   if ((actionFractions.build_defense_post ?? 0) > 0.12) {

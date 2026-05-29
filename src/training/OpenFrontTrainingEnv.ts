@@ -65,6 +65,10 @@ const ATTACK_ACTIONS = new Set<TrainingAction>([
   "attack_weakest",
   "attack_strongest",
 ]);
+const ALLIANCE_REQUEST_ACTIONS = new Set<TrainingAction>([
+  "request_alliance_nearest",
+  "request_alliance_strongest",
+]);
 const ATTACK_OR_EXPAND_ACTIONS = [
   "expand",
   "attack_nearest",
@@ -83,11 +87,13 @@ export interface RewardBreakdown {
   alliance: number;
   attackAction: number;
   defensiveBuildPenalty: number;
+  diplomacyDelayPenalty: number;
   elimination: number;
   enemyTile: number;
   enemyTroop: number;
   gold: number;
   invalidActionPenalty: number;
+  missedAttackPenalty: number;
   passiveBorderPenalty: number;
   rank: number;
   tile: number;
@@ -409,6 +415,9 @@ export class OpenFrontTrainingEnv {
     const beforeAlliances = this.learner.alliances().length;
     const beforeOpponents = this.opponentRewardStats();
     const beforeBorders = this.borderStats(this.learner);
+    const attackAvailable = [...ATTACK_ACTIONS].some((candidate) =>
+      isNeuralBotActionAvailable(this.game, this.learner, candidate),
+    );
     const attackOrExpandAvailable = ATTACK_OR_EXPAND_ACTIONS.some((candidate) =>
       isNeuralBotActionAvailable(this.game, this.learner, candidate),
     );
@@ -450,16 +459,22 @@ export class OpenFrontTrainingEnv {
       Math.max(0, beforeOpponents.alive - afterOpponents.alive) * 8;
     const winReward = this.learnerWon() ? 24 : 0;
     const attackActionReward =
-      actionSucceeded && ATTACK_ACTIONS.has(action) ? 0.2 : 0;
+      actionSucceeded && ATTACK_ACTIONS.has(action) ? 0.55 : 0;
     const allianceReward = Math.max(0, afterAlliances - beforeAlliances) * 1.5;
     const passiveBorderPenalty =
       action === "hold" && attackOrExpandAvailable
         ? beforeBorders.enemy > 0
-          ? -0.35
-          : -0.18
+          ? -0.75
+          : -0.3
         : action === "hold" && beforeBorders.enemy > 0
-          ? -0.12
+          ? -0.25
           : 0;
+    const missedAttackPenalty =
+      attackAvailable && !ATTACK_ACTIONS.has(action) ? -0.18 : 0;
+    const diplomacyDelayPenalty =
+      attackAvailable && actionSucceeded && ALLIANCE_REQUEST_ACTIONS.has(action)
+        ? -0.3
+        : 0;
     const defensiveBuildPenalty =
       actionSucceeded &&
       (action === "build_defense_post" || action === "build_sam_launcher")
@@ -472,11 +487,13 @@ export class OpenFrontTrainingEnv {
       alliance: allianceReward,
       attackAction: attackActionReward,
       defensiveBuildPenalty,
+      diplomacyDelayPenalty,
       elimination: eliminationReward,
       enemyTile: enemyTileReward,
       enemyTroop: enemyTroopReward,
       gold: goldReward,
       invalidActionPenalty,
+      missedAttackPenalty,
       passiveBorderPenalty,
       rank: rankReward,
       tile: tileReward,

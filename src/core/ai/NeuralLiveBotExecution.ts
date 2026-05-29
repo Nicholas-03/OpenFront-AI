@@ -178,7 +178,7 @@ export class NeuralLiveBotExecution implements Execution {
     }
 
     const pass = forwardNeuralPolicy(this.policy, this.state(player));
-    return pass.probs
+    const ranked = pass.probs
       .map((probability, index) => ({
         probability,
         action: this.policy!.actions[index],
@@ -196,6 +196,23 @@ export class NeuralLiveBotExecution implements Execution {
           MAX_NEURAL_PARALLEL_ATTACKS,
         ),
       );
+
+    const accepts = ranked.filter((action) => action === "accept_alliance");
+    const requests = ranked.filter(
+      (action) =>
+        action === "request_alliance_nearest" ||
+        action === "request_alliance_strongest",
+    );
+    const holds = ranked.filter((action) => action === "hold");
+    const active = ranked.filter(
+      (action) =>
+        action !== "hold" &&
+        action !== "accept_alliance" &&
+        action !== "request_alliance_nearest" &&
+        action !== "request_alliance_strongest",
+    );
+
+    return [...accepts, ...active, ...requests, ...holds];
   }
 
   private tryAction(player: Player, action: NeuralBotAction): boolean {
