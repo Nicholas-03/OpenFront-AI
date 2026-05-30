@@ -94,6 +94,7 @@ export interface RewardBreakdown {
   gold: number;
   invalidActionPenalty: number;
   missedAttackPenalty: number;
+  navalBuild: number;
   passiveBorderPenalty: number;
   rank: number;
   tile: number;
@@ -475,6 +476,12 @@ export class OpenFrontTrainingEnv {
       attackAvailable && actionSucceeded && ALLIANCE_REQUEST_ACTIONS.has(action)
         ? -0.3
         : 0;
+    const navalBuildReward =
+      actionSucceeded && action === "build_port"
+        ? 0.7
+        : actionSucceeded && action === "build_warship"
+          ? 1.1
+          : 0;
     const defensiveBuildPenalty =
       actionSucceeded &&
       (action === "build_defense_post" || action === "build_sam_launcher")
@@ -494,6 +501,7 @@ export class OpenFrontTrainingEnv {
       gold: goldReward,
       invalidActionPenalty,
       missedAttackPenalty,
+      navalBuild: navalBuildReward,
       passiveBorderPenalty,
       rank: rankReward,
       tile: tileReward,
@@ -623,12 +631,14 @@ export class OpenFrontTrainingEnv {
 
   private findSpawnCenters(count: number): TileRef[] {
     const centers: TileRef[] = [];
-    const margin = 6;
-    const samples = 600;
+    const smallestSide = Math.min(this.game.width(), this.game.height());
+    const margin = Math.max(1, Math.min(6, Math.floor(smallestSide / 5)));
+    const samples = 1200;
+    const hasWater = this.mapHasWater();
 
     for (let index = 0; index < count; index++) {
       let bestTile: TileRef | null = null;
-      let bestDistance = -1;
+      let bestScore = Number.NEGATIVE_INFINITY;
       for (let attempt = 0; attempt < samples; attempt++) {
         const x = this.rng.int(
           margin,
@@ -644,14 +654,16 @@ export class OpenFrontTrainingEnv {
         }
         const distance =
           centers.length === 0
-            ? Number.MAX_SAFE_INTEGER
+            ? 0
             : Math.min(
                 ...centers.map((center) =>
                   this.game.manhattanDist(center, tile),
                 ),
               );
-        if (distance > bestDistance) {
-          bestDistance = distance;
+        const shoreScore = hasWater ? this.shoreSpawnScore(tile) : 0;
+        const score = distance + shoreScore;
+        if (score > bestScore) {
+          bestScore = score;
           bestTile = tile;
         }
       }
@@ -663,6 +675,40 @@ export class OpenFrontTrainingEnv {
     }
 
     return centers;
+  }
+
+  private mapHasWater(): boolean {
+    for (let y = 0; y < this.game.height(); y++) {
+      for (let x = 0; x < this.game.width(); x++) {
+        if (this.game.isWater(this.game.ref(x, y))) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  private shoreSpawnScore(tile: TileRef): number {
+    if (this.game.isShore(tile)) {
+      return 24;
+    }
+
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (let dy = -10; dy <= 10; dy++) {
+      for (let dx = -10; dx <= 10; dx++) {
+        const x = this.game.x(tile) + dx;
+        const y = this.game.y(tile) + dy;
+        if (!this.game.isValidCoord(x, y)) {
+          continue;
+        }
+        const candidate = this.game.ref(x, y);
+        if (this.game.isLand(candidate) && this.game.isShore(candidate)) {
+          bestDistance = Math.min(bestDistance, Math.abs(dx) + Math.abs(dy));
+        }
+      }
+    }
+
+    return Number.isFinite(bestDistance) ? Math.max(0, 20 - bestDistance) : 0;
   }
 
   private opponents(): Player[] {

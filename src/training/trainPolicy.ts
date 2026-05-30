@@ -59,6 +59,8 @@ const CURRICULUM_PHASES: Array<CurriculumPhase & { throughEpisode: number }> = [
       "attack_nearest",
       "attack_weakest",
       "attack_strongest",
+      "build_port",
+      "build_warship",
       "accept_alliance",
       "hold",
     ],
@@ -73,6 +75,8 @@ const CURRICULUM_PHASES: Array<CurriculumPhase & { throughEpisode: number }> = [
       "attack_strongest",
       "build_city",
       "build_factory",
+      "build_port",
+      "build_warship",
       "upgrade_structure",
       "accept_alliance",
       "request_alliance_nearest",
@@ -269,6 +273,7 @@ function zeroRewardBreakdown(): Record<RewardBreakdownKey, number> {
     gold: 0,
     invalidActionPenalty: 0,
     missedAttackPenalty: 0,
+    navalBuild: 0,
     passiveBorderPenalty: 0,
     rank: 0,
     tile: 0,
@@ -567,7 +572,7 @@ async function main(): Promise<void> {
   const decisionInterval = numberArg("--decisionInterval", 20);
   const opponents = positiveIntegerArg("--opponents", 3);
   const seed = numberArg("--seed", 42);
-  const mapName = stringArg("--map", "training_plains");
+  const mapName = stringArg("--map", "training_coast");
   const opponentAI = opponentAIArg();
   const curriculumMode = curriculumModeArg();
   const opponentCurriculumMode = opponentCurriculumModeArg();
