@@ -3,7 +3,7 @@ import { NEURAL_BOT_INPUT_SIZE } from "./NeuralBotFeatures";
 export const NEURAL_BOT_CLIENT_ID = "NEURALAI";
 export const NEURAL_BOT_NAME = "Neural AI";
 export const NEURAL_BOT_POLICY_URL = "/training/openfront-policy.json";
-export const NEURAL_BOT_HIDDEN_LAYERS = [128, 128, 64] as const;
+export const NEURAL_BOT_HIDDEN_LAYERS = [256, 256, 128] as const;
 
 export const NEURAL_BOT_ACTIONS = [
   "expand",

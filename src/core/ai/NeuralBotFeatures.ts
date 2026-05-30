@@ -40,6 +40,22 @@ export const NEURAL_BOT_SCALAR_FEATURE_NAMES = [
   "alive_opponents_ratio",
   "incoming_attacks_ratio",
   "incoming_troops_vs_self",
+  "troop_capacity_ratio",
+  "strongest_max_troops_vs_self",
+  "strongest_troop_capacity_ratio",
+  "weakest_max_troops_vs_self",
+  "weakest_troop_capacity_ratio",
+  "nearest_opponent_troops_vs_self",
+  "nearest_opponent_max_troops_vs_self",
+  "nearest_opponent_troop_capacity_ratio",
+  "border_enemy_troops_vs_self",
+  "border_enemy_max_troops_vs_self",
+  "border_enemy_troop_density_vs_self",
+  "total_enemy_troops_vs_self",
+  "total_enemy_max_troops_vs_self",
+  "total_enemy_troop_capacity_ratio",
+  "strongest_enemy_gold_vs_self",
+  "weakest_enemy_gold_vs_self",
   "city_count",
   "factory_count",
   "port_count",
@@ -126,6 +142,8 @@ export const NEURAL_BOT_MAP_CHANNEL_NAMES = [
   "own_warship",
   "enemy_warship",
   "fallout",
+  "own_troop_density",
+  "enemy_troop_density",
 ] as const;
 
 export const NEURAL_BOT_MAP_CHANNEL_COUNT = NEURAL_BOT_MAP_CHANNEL_NAMES.length;
@@ -190,6 +208,22 @@ function logNorm(value: number, scale: number): number {
 
 function countNorm(value: number, scale: number): number {
   return logNorm(value, scale);
+}
+
+function maxTroopsFor(game: Game, player: Player): number {
+  return Math.max(1, game.config().maxTroops(player));
+}
+
+function troopCapacityRatio(game: Game, player: Player | null): number {
+  return player === null
+    ? 0
+    : clamp01(player.troops() / maxTroopsFor(game, player));
+}
+
+function troopDensity(player: Player | null): number {
+  return player === null
+    ? 0
+    : player.troops() / Math.max(1, player.numTilesOwned());
 }
 
 function affordability(game: Game, player: Player, type: UnitType): number {
@@ -320,11 +354,35 @@ export function buildNeuralBotFeatures({
   const borders = borderStats(game, player);
   const selfTiles = Math.max(1, player.numTilesOwned());
   const selfTroops = Math.max(1, player.troops());
+  const selfMaxTroops = maxTroopsFor(game, player);
   const selfGold = Math.max(1, Number(player.gold()));
   const rank = rankPlayer(game, player);
   const structures = player.units(...Structures.types);
   const ownStructureCount = Math.max(1, structureCount(player));
   const ownWarships = player.units(UnitType.Warship);
+  const borderingOpponents = opponents.filter((opponent) =>
+    player.sharesBorderWith(opponent),
+  );
+  const borderEnemyTroops = borderingOpponents.reduce(
+    (total, opponent) => total + opponent.troops(),
+    0,
+  );
+  const borderEnemyMaxTroops = borderingOpponents.reduce(
+    (total, opponent) => total + maxTroopsFor(game, opponent),
+    0,
+  );
+  const borderEnemyTiles = borderingOpponents.reduce(
+    (total, opponent) => total + opponent.numTilesOwned(),
+    0,
+  );
+  const totalEnemyTroops = opponents.reduce(
+    (total, opponent) => total + opponent.troops(),
+    0,
+  );
+  const totalEnemyMaxTroops = opponents.reduce(
+    (total, opponent) => total + maxTroopsFor(game, opponent),
+    0,
+  );
   const neighbors = neighborPlayers(player);
   const neighborsByStrength = byStrength(neighbors);
   const enemyNeighbors = neighbors.filter(
@@ -377,6 +435,24 @@ export function buildNeuralBotFeatures({
     opponents.length / Math.max(1, opponentBaseline),
     Math.min(1, player.incomingAttacks().length / 6),
     logNorm(incomingTroops / selfTroops, 8),
+    troopCapacityRatio(game, player),
+    strongest ? normRatio(maxTroopsFor(game, strongest) / selfMaxTroops) : 0,
+    troopCapacityRatio(game, strongest),
+    weakest ? normRatio(maxTroopsFor(game, weakest) / selfMaxTroops) : 0,
+    troopCapacityRatio(game, weakest),
+    nearest ? normRatio(nearest.troops() / selfTroops) : 0,
+    nearest ? normRatio(maxTroopsFor(game, nearest) / selfMaxTroops) : 0,
+    troopCapacityRatio(game, nearest),
+    normRatio(borderEnemyTroops / selfTroops),
+    normRatio(borderEnemyMaxTroops / selfMaxTroops),
+    normRatio(
+      borderEnemyTroops / Math.max(1, borderEnemyTiles) / troopDensity(player),
+    ),
+    normRatio(totalEnemyTroops / selfTroops),
+    normRatio(totalEnemyMaxTroops / selfMaxTroops),
+    clamp01(totalEnemyTroops / Math.max(1, totalEnemyMaxTroops)),
+    strongest ? normRatio(Number(strongest.gold()) / selfGold) : 0,
+    weakest ? normRatio(Number(weakest.gold()) / selfGold) : 0,
     countNorm(player.unitCount(UnitType.City), 12),
     countNorm(player.unitCount(UnitType.Factory), 8),
     countNorm(player.unitCount(UnitType.Port), 8),
@@ -659,6 +735,10 @@ function writeTileChannels(
   view[base + 10] = lookup.ownWarshipTiles.has(tile) ? 1 : 0;
   view[base + 11] = lookup.enemyWarshipTiles.has(tile) ? 1 : 0;
   view[base + 12] = game.hasFallout(tile) ? 1 : 0;
+  view[base + 13] =
+    isOwn && owner.isPlayer() ? logNorm(troopDensity(owner), 5_000) : 0;
+  view[base + 14] =
+    isEnemy && owner.isPlayer() ? logNorm(troopDensity(owner), 5_000) : 0;
 }
 
 function poolSpatialView(view: number[], sourceSize: number): number[] {
